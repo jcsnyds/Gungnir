@@ -17,7 +17,7 @@ transform = midas_transforms.dpt_transform if model_type == "DPT_Large" else mid
 
 # 3. Load and format your JPG image
 # Replace "your_image.jpg" with the path to your file
-img = cv2.imread("your_image.jpg")
+img = cv2.imread("jcsnyds/Gungnir/mug-1.jpg")
 img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
 input_batch = transform(img).to(device)
 
