@@ -14,12 +14,13 @@ https://github.com/realsenseai/librealsense/blob/master/wrappers/python/
 
 AI Statement:
 Used Gemini to provide code to get Intrinsic Matrix K
+Used Claude to resolve problem where old version of pyrealsense2 was only available on older versions of python.
 
 Written by Ryan Poliquin
 Debugged using Claude AI
 10/5/2026
 """
-import pyrealsenseOLD as rs
+from Gungnir.Archive import pyrealsense2 as rs
 import matplotlib
 matplotlib.use('QtAgg') # Or 'TkAgg' if you don't have PyQt installed
 from matplotlib import pyplot as plt
@@ -199,12 +200,3 @@ class L515:
             self.pipeline.stop()
             self.running = False
             cv2.destroyAllWindows()
-
-
-if __name__ == "__main__":
-    camera = L515()
-    print(camera.get_k())
-    for i in range(200):
-        camera.take_picture()
-        camera.show_RGB_DepthMap()
-

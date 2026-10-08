@@ -1,0 +1,12 @@
+.venv/
+.cache/
+build/
+__pycache__/
+*.py[cod]
+python/l515_native.dll
+python/l515_native.so
+python/l515_native.dylib
+python/realsense2.dll
+python/librealsense2.so*
+python/librealsense2.dylib
+python/native_runtime/
