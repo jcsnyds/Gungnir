@@ -258,6 +258,80 @@ def find_windows_sdk_runtime() -> Path | None:
     return None
 
 
+def run_windows_installer_elevated(installer: Path, install_log: Path) -> int:
+    """Run the SDK installer visibly with UAC elevation, and wait for it to finish.
+
+    The previous silent launch returned Inno Setup exit code 2 on some systems.
+    Using ShellExecuteEx with the ``runas`` verb lets Windows display the UAC
+    prompt, while the visible installer exposes any version/downgrade prompts
+    instead of silently cancelling before installation starts.
+    """
+    if os.name != "nt":
+        raise SetupError("Elevated Windows installer can only run on Windows.")
+
+    class SHELLEXECUTEINFOW(ctypes.Structure):
+        _fields_ = [
+            ("cbSize", ctypes.c_ulong),
+            ("fMask", ctypes.c_ulong),
+            ("hwnd", ctypes.c_void_p),
+            ("lpVerb", ctypes.c_wchar_p),
+            ("lpFile", ctypes.c_wchar_p),
+            ("lpParameters", ctypes.c_wchar_p),
+            ("lpDirectory", ctypes.c_wchar_p),
+            ("nShow", ctypes.c_int),
+            ("hInstApp", ctypes.c_void_p),
+            ("lpIDList", ctypes.c_void_p),
+            ("lpClass", ctypes.c_wchar_p),
+            ("hkeyClass", ctypes.c_void_p),
+            ("dwHotKey", ctypes.c_ulong),
+            ("hIconOrMonitor", ctypes.c_void_p),
+            ("hProcess", ctypes.c_void_p),
+        ]
+
+    shell32 = ctypes.WinDLL("shell32", use_last_error=True)
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    info = SHELLEXECUTEINFOW()
+    info.cbSize = ctypes.sizeof(info)
+    info.fMask = 0x00000040  # SEE_MASK_NOCLOSEPROCESS
+    info.lpVerb = "runas"
+    info.lpFile = str(installer)
+    # Inno Setup expects quotes around the log filename, not around /LOG= itself.
+    info.lpParameters = f'/LOG="{install_log}"'
+    info.lpDirectory = str(installer.parent)
+    info.nShow = 1  # SW_SHOWNORMAL
+
+    shell32.ShellExecuteExW.argtypes = [ctypes.POINTER(SHELLEXECUTEINFOW)]
+    shell32.ShellExecuteExW.restype = ctypes.c_int
+    if not shell32.ShellExecuteExW(ctypes.byref(info)):
+        error = ctypes.get_last_error()
+        if error == 1223:  # ERROR_CANCELLED (the user declined the UAC prompt)
+            raise SetupError(
+                "Windows elevation was cancelled. Rerun setup.py and approve the UAC prompt "
+                "to install the RealSense SDK runtime."
+            )
+        raise OSError(error, "Could not start the elevated RealSense SDK installer")
+
+    process = info.hProcess
+    if not process:
+        raise SetupError("Windows did not return a handle for the RealSense SDK installer.")
+    try:
+        kernel32.WaitForSingleObject.argtypes = [ctypes.c_void_p, ctypes.c_ulong]
+        kernel32.WaitForSingleObject.restype = ctypes.c_ulong
+        wait_result = kernel32.WaitForSingleObject(process, 0xFFFFFFFF)  # INFINITE
+        if wait_result != 0:  # WAIT_OBJECT_0
+            raise SetupError("Could not wait for the RealSense SDK installer to finish.")
+        exit_code = ctypes.c_ulong()
+        kernel32.GetExitCodeProcess.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_ulong)]
+        kernel32.GetExitCodeProcess.restype = ctypes.c_int
+        if not kernel32.GetExitCodeProcess(process, ctypes.byref(exit_code)):
+            raise ctypes.WinError(ctypes.get_last_error())
+        return int(exit_code.value)
+    finally:
+        kernel32.CloseHandle.argtypes = [ctypes.c_void_p]
+        kernel32.CloseHandle.restype = ctypes.c_int
+        kernel32.CloseHandle(process)
+
+
 def install_windows_sdk(project_root: Path, force: bool) -> Path:
     """Install/copy the official prebuilt SDK; no Visual Studio compiler required."""
     destination = project_root / "python" / "native_runtime"
@@ -294,26 +368,26 @@ def install_windows_sdk(project_root: Path, force: bool) -> Path:
             )
 
         install_log = cache_dir / "realsense_sdk_install.log"
-        log("Installing the prebuilt RealSense SDK runtime (a UAC/admin prompt may appear)")
-        command = [
-            str(installer),
-            "/VERYSILENT",
-            "/SUPPRESSMSGBOXES",
-            "/NORESTART",
-            "/NOCANCEL",
-            "/SP-",
-            f"/LOG={install_log}",
-        ]
-        print("    Running the signed SDK installer silently")
+        log("Starting the official RealSense SDK installer with Windows elevation")
+        print("    The visible installer will open. Approve the UAC prompt and complete the wizard.")
         try:
-            result = subprocess.run(command, check=False, timeout=900)
-        except subprocess.TimeoutExpired as exc:
-            raise SetupError(f"RealSense SDK installer timed out. Installer log: {install_log}") from exc
-        if result.returncode not in (0, 3010, 1641):
+            result_code = run_windows_installer_elevated(installer, install_log)
+        except OSError as exc:
             raise SetupError(
-                "The RealSense SDK installer did not complete successfully "
-                f"(exit code {result.returncode}). See: {install_log}. "
-                "You can also run the cached installer manually as administrator."
+                "Could not launch the RealSense SDK installer. Run the cached installer manually "
+                f"as administrator: {installer}\nDetails: {exc}"
+            ) from exc
+        if result_code not in (0, 3010, 1641):
+            if result_code == 2:
+                reason = "The installer was cancelled before installation started."
+            elif result_code == 5:
+                reason = "The installer was cancelled during installation."
+            else:
+                reason = "The installer did not complete successfully."
+            raise SetupError(
+                f"{reason} Exit code: {result_code}. Installer log: {install_log}. "
+                "Run setup.py again and complete the installer, or run the cached installer "
+                "manually as administrator."
             )
         runtime_source = find_windows_sdk_runtime()
 

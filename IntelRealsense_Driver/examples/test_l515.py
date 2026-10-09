@@ -17,4 +17,5 @@ with L515() as camera:
     print("Color shape:", camera.get_color().shape)
     print("Depth range (m):", camera.get_depth().min(), camera.get_depth().max())
 
-    camera.show_picture()
+    for i in range(500):
+        camera.show_picture()

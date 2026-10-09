@@ -23,9 +23,9 @@ Activate your existing environment, then run:
 python setup.py
 ```
 
-Or run `setup.bat`. Setup installs Python dependencies into that active environment, downloads the official `Intel.RealSense.SDK-WIN10-2.54.2.5684.exe` if the SDK runtime is not already installed, verifies its SHA-256, runs the SDK installer, and copies the x64 runtime DLLs to `python/native_runtime/`.
+Or run `setup.bat`. Setup installs Python dependencies into that active environment, downloads the official `Intel.RealSense.SDK-WIN10-2.54.2.5684.exe` if the SDK runtime is not already installed, verifies its SHA-256, and launches the SDK installer visibly with Windows UAC elevation. Complete the installer wizard; setup then copies the x64 runtime DLLs to `python/native_runtime/`.
 
-**No Visual Studio or C++ compiler is used on Windows.** A UAC/admin prompt may appear when installing the official SDK. If the automatic installer fails, run the cached installer `.cache/Intel.RealSense.SDK-WIN10-2.54.2.5684.exe` manually as administrator, then rerun `python setup.py`.
+**No Visual Studio or C++ compiler is used on Windows.** The installer is deliberately visible because silent installation can return exit code 2 when it is cancelled before installation starts or when a confirmation is declined. If installation is cancelled, rerun `python setup.py` and complete the wizard, or run `.cache/Intel.RealSense.SDK-WIN10-2.54.2.5684.exe` manually as administrator.
 
 ### Linux
 
