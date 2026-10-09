@@ -723,7 +723,7 @@ def copy_native_runtime(project_root: Path, native_library: Path) -> Path:
     destination_dir.mkdir(parents=True, exist_ok=True)
     destination = destination_dir / native_library.name
 
-    log(f"Installing native runtime next to python/l515.py: {destination.name}")
+    log(f"Installing native runtime next to python/L515.py: {destination.name}")
     shutil.copy2(native_library, destination)
 
     build_lib = native_library.parent
@@ -851,7 +851,7 @@ def print_success(project_root: Path) -> None:
     print(f"Project:       {project_root}")
     print(f"Python:        {python}")
     print(f"OS:            {system}")
-    print(f"Python module: {project_root / 'python' / 'l515.py'}")
+    print(f"Python module: {project_root / 'python' / 'L515.py'}")
     if system == "Windows":
         print(f"SDK runtime:   {project_root / 'python' / 'native_runtime' / 'realsense2.dll'}")
         print("Build tools:   no Visual Studio/C++ compiler required")

@@ -62,7 +62,7 @@ The setup process also creates a `.pth` file inside the **active environment** s
 Because the environment is expected to already be active, there is no additional activation step after setup. Your application can use the class in the same style as before:
 
 ```python
-from l515 import L515
+from L515 import L515
 
 camera = L515()
 camera.take_picture()
@@ -77,7 +77,7 @@ camera.close()
 A context manager is also supported:
 
 ```python
-from l515 import L515
+from L515 import L515
 
 with L515() as camera:
     camera.take_picture()
