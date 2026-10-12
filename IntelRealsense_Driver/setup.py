@@ -486,7 +486,7 @@ def smoke_test_windows_runtime(project_root: Path, runtime_dir: Path) -> None:
         raise SetupError(f"Could not load the prebuilt SDK DLL: {exc}") from exc
 
     import_probe = subprocess.run(
-        [str(Path(sys.executable).resolve()), "-c", "from l515 import L515; print('Python import OK:', L515)"],
+        [str(Path(sys.executable).resolve()), "-c", "from L515 import L515; print('Python import OK:', L515)"],
         capture_output=True,
         text=True,
         cwd=project_root / "python",
