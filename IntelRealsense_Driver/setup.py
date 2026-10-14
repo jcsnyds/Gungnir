@@ -79,13 +79,20 @@ def current_os() -> str:
 
 
 def is_virtual_environment() -> bool:
-    """Return True for standard venv/virtualenv and Conda environments."""
-    return (
-        getattr(sys, "real_prefix", None) is not None
-        or sys.prefix != sys.base_prefix
-        or os.environ.get("VIRTUAL_ENV") is not None
-        or os.environ.get("CONDA_PREFIX") is not None
-    )
+    """Return True only when this interpreter is inside an isolated environment.
+
+    Do not trust VIRTUAL_ENV alone: it can be left set in a shell that is running
+    the system interpreter. Compare it with sys.prefix instead.
+    """
+    if getattr(sys, "real_prefix", None) is not None or sys.prefix != sys.base_prefix:
+        return True
+
+    current_prefix = Path(sys.prefix).resolve()
+    for variable in ("VIRTUAL_ENV", "CONDA_PREFIX"):
+        value = os.environ.get(variable)
+        if value and Path(value).resolve() == current_prefix:
+            return True
+    return False
 
 
 def require_existing_environment() -> None:
@@ -161,28 +168,38 @@ def sudo_command(command: list[str]) -> None:
 
 
 def install_python_dependencies(system: str) -> None:
-    """Install packages into the exact interpreter running setup.py."""
-    python = Path(sys.executable).resolve()
+    """Install packages into the exact interpreter running setup.py.
+
+    IMPORTANT: do not call Path(sys.executable).resolve() here. On Linux,
+    a virtual environment's python executable is often a symlink to
+    /usr/bin/pythonX.Y. Resolving that symlink loses the venv context and makes
+    pip target Debian/Ubuntu's externally-managed system Python.
+    """
+    python = sys.executable
     log("Installing Python dependencies into the current environment")
-    print(f"    Python: {python}")
-    run([str(python), "-m", "pip", "install", "--upgrade", "pip", "setuptools", "wheel"])
+    print(f"    Python executable: {python}")
+    print(f"    Environment prefix: {sys.prefix}")
+    # The active interpreter must own pip. Do not upgrade pip/setuptools/wheel
+    # as a separate setup step; that is unnecessary and was the source of the
+    # reported PEP 668 failure when a resolved symlink reached system Python.
+    run([python, "-m", "pip", "--version"])
     packages = ["numpy", "opencv-python", "matplotlib"]
     if system == "Linux":
         packages.extend(["cmake", "ninja"])
-    run([str(python), "-m", "pip", "install", "--upgrade", *packages])
+    run([python, "-m", "pip", "install", "--upgrade", *packages])
 
 
 def linux_package_manager() -> tuple[str, list[str]] | None:
     if command_exists("apt-get"):
-        return "apt", ["build-essential", "libusb-1.0-0-dev", "libssl-dev", "pkg-config"]
+        return "apt", ["build-essential", "libusb-1.0-0-dev", "libudev-dev", "libssl-dev", "pkg-config"]
     if command_exists("dnf"):
-        return "dnf", ["gcc-c++", "make", "libusb1-devel", "openssl-devel", "pkgconf-pkg-config"]
+        return "dnf", ["gcc-c++", "make", "libusb1-devel", "systemd-devel", "openssl-devel", "pkgconf-pkg-config"]
     if command_exists("yum"):
-        return "yum", ["gcc-c++", "make", "libusb1-devel", "openssl-devel", "pkgconfig"]
+        return "yum", ["gcc-c++", "make", "libusb1-devel", "systemd-devel", "openssl-devel", "pkgconfig"]
     if command_exists("pacman"):
-        return "pacman", ["base-devel", "libusb", "openssl", "pkgconf"]
+        return "pacman", ["base-devel", "libusb", "systemd", "openssl", "pkgconf"]
     if command_exists("zypper"):
-        return "zypper", ["gcc-c++", "make", "libusb-1_0-devel", "libopenssl-devel", "pkg-config"]
+        return "zypper", ["gcc-c++", "make", "libusb-1_0-devel", "libudev-devel", "libopenssl-devel", "pkg-config"]
     return None
 
 
@@ -486,7 +503,7 @@ def smoke_test_windows_runtime(project_root: Path, runtime_dir: Path) -> None:
         raise SetupError(f"Could not load the prebuilt SDK DLL: {exc}") from exc
 
     import_probe = subprocess.run(
-        [str(Path(sys.executable).resolve()), "-c", "from L515 import L515; print('Python import OK:', L515)"],
+        [sys.executable, "-c", "from l515 import L515; print('Python import OK:', L515)"],
         capture_output=True,
         text=True,
         cwd=project_root / "python",
@@ -507,6 +524,7 @@ def ensure_system_prerequisites(system: str, skip: bool) -> Path | None:
         pkg_config_ready = command_exists("pkg-config")
         usb_ready = False
         openssl_ready = False
+        udev_ready = False
         if pkg_config_ready:
             usb_ready = subprocess.run(
                 ["pkg-config", "--exists", "libusb-1.0"],
@@ -518,14 +536,19 @@ def ensure_system_prerequisites(system: str, skip: bool) -> Path | None:
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
             ).returncode == 0
-        if compiler_ready and pkg_config_ready and usb_ready and openssl_ready:
+            udev_ready = subprocess.run(
+                ["pkg-config", "--exists", "libudev"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            ).returncode == 0
+        if compiler_ready and pkg_config_ready and usb_ready and openssl_ready and udev_ready:
             return None
 
         package_info = linux_package_manager()
         if package_info is None:
             raise SetupError(
                 "Could not identify a supported Linux package manager. Install a C++17-capable "
-                "compiler, make, pkg-config, libusb-1.0 development headers, and OpenSSL headers, "
+                "compiler, make, pkg-config, libusb-1.0/libudev development headers, and OpenSSL headers, "
                 "then rerun setup.py."
             )
 
@@ -648,7 +671,7 @@ def obtain_librealsense(project_root: Path, supplied_source: Path | None, force:
 
 def cmake_executable() -> str:
     """Find CMake installed in the current environment, then fall back to PATH."""
-    python_dir = Path(sys.executable).resolve().parent
+    python_dir = Path(sys.executable).parent
     candidates = [python_dir / "cmake.exe", python_dir / "cmake"]
 
     scripts_dir = os.environ.get("PATH", "").split(os.pathsep)
@@ -692,6 +715,11 @@ def configure_and_build(
         "-DBUILD_PYTHON_BINDINGS=OFF",
         "-DCMAKE_BUILD_TYPE=Release",
     ]
+    if system == "Linux":
+        # The RSUSB backend avoids requiring a Jetson-specific kernel patch.
+        # It still uses libusb and may have different performance/limitations
+        # from the native kernel-driver backend.
+        configure.append("-DFORCE_RSUSB_BACKEND=ON")
 
     log("Configuring the native L515 backend")
     run(configure, cwd=project_root, env=build_env)
@@ -723,7 +751,7 @@ def copy_native_runtime(project_root: Path, native_library: Path) -> Path:
     destination_dir.mkdir(parents=True, exist_ok=True)
     destination = destination_dir / native_library.name
 
-    log(f"Installing native runtime next to python/L515.py: {destination.name}")
+    log(f"Installing native runtime next to python/l515.py: {destination.name}")
     shutil.copy2(native_library, destination)
 
     build_lib = native_library.parent
@@ -783,7 +811,7 @@ def install_linux_udev_rules(project_root: Path) -> None:
 
 
 def write_project_path_file(project_root: Path) -> Path:
-    python = Path(sys.executable).resolve()
+    python = Path(sys.executable)
     probe = subprocess.run(
         [str(python), "-c", "import site; print(site.getsitepackages()[0])"],
         capture_output=True,
@@ -810,7 +838,7 @@ def smoke_test_native_library(native_library: Path) -> None:
         )
 
     import_probe = subprocess.run(
-        [str(Path(sys.executable).resolve()), "-c", "from l515 import L515; print('Python import OK:', L515)"],
+        [sys.executable, "-c", "from l515 import L515; print('Python import OK:', L515)"],
         capture_output=True,
         text=True,
         cwd=native_library.parent.parent,
@@ -827,7 +855,7 @@ def camera_test(project_root: Path) -> None:
     log("Testing the physical L515")
     run(
         [
-            str(Path(sys.executable).resolve()),
+            sys.executable,
             "-c",
             (
                 "from l515 import L515; "
@@ -844,14 +872,14 @@ def camera_test(project_root: Path) -> None:
 
 def print_success(project_root: Path) -> None:
     system = current_os()
-    python = Path(sys.executable).resolve()
+    python = Path(sys.executable)
     print("\n" + "=" * 72)
     print("L515 setup completed successfully.")
     print("=" * 72)
     print(f"Project:       {project_root}")
     print(f"Python:        {python}")
     print(f"OS:            {system}")
-    print(f"Python module: {project_root / 'python' / 'L515.py'}")
+    print(f"Python module: {project_root / 'python' / 'l515.py'}")
     if system == "Windows":
         print(f"SDK runtime:   {project_root / 'python' / 'native_runtime' / 'realsense2.dll'}")
         print("Build tools:   no Visual Studio/C++ compiler required")
@@ -878,7 +906,7 @@ def main() -> int:
     system = current_os()
 
     log(f"Preparing {system} setup using the existing Python environment")
-    print(f"    Python: {Path(sys.executable).resolve()}")
+    print(f"    Python: {sys.executable}")
     print(f"    Prefix: {Path(sys.prefix).resolve()}")
 
     if system == "Windows":

@@ -245,7 +245,7 @@ class L515:
         searched = "\n".join(f"  {p}" for p in candidates)
         raise L515Error(
             "Could not find the native L515 library. Build the CMake project "
-            "first, copy the resulting library beside L515.py, or set "
+            "first, copy the resulting library beside l515.py, or set "
             "L515_NATIVE_PATH. Searched:\n" + searched
         )
 
@@ -365,7 +365,7 @@ class L515:
         )
         images = np.hstack((bg_removed, depth_colormap))
 
-        cv2.namedWindow("Align Example", cv2.WINDOW_AUTOSIZE)
+        cv2.namedWindow("Align Example", cv2.WINDOW_NORMAL)
         cv2.imshow("Align Example", images)
         cv2.waitKey(1)
 
@@ -387,7 +387,7 @@ class L515:
         z_plot = self.depth_image.ravel()
         c_plot = self.color_image.reshape(-1, 3) / 255.0
 
-        downsample_rate = 10
+        downsample_rate = 25
         x_plot = x_plot[::downsample_rate]
         y_plot = y_plot[::downsample_rate]
         z_plot = z_plot[::downsample_rate]
@@ -407,7 +407,6 @@ class L515:
         ax.set_ylabel("Y Axis (Rows)")
         ax.set_zlabel("Z Axis (Height)")
         ax.set_title("3D Scatter Plot from 2D NumPy Arrays")
-        plt.ion()
         plt.show(block=True)
 
     def close(self) -> None:

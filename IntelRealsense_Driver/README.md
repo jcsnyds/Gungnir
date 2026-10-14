@@ -36,7 +36,9 @@ chmod +x setup.sh
 ./setup.sh
 ```
 
-The script attempts to install the compiler, `libusb`, OpenSSL development headers, and `pkg-config` using the detected Linux package manager (`apt`, `dnf`, `yum`, `pacman`, or `zypper`). It also installs the RealSense udev rules when the v2.54.2 source tree contains them.
+The script attempts to install the compiler, `libusb`, `libudev`, OpenSSL development headers, and `pkg-config` using the detected Linux package manager (`apt`, `dnf`, `yum`, `pacman`, or `zypper`). It builds librealsense with `FORCE_RSUSB_BACKEND=ON`, which is useful on Jetson boards because it avoids requiring a Jetson-specific kernel patch. The RSUSB backend has tradeoffs versus the native kernel-driver backend. It also installs the RealSense udev rules when the v2.54.2 source tree contains them.
+
+**Jetson/Python environment note:** the setup always invokes pip with the active interpreter's `sys.executable` path without resolving its symlink. This matters on Linux virtual environments, where `venv/bin/python` may link to `/usr/bin/pythonX.Y`; resolving that symlink can accidentally send pip to the OS-managed interpreter and trigger `externally-managed-environment`. Setup does not upgrade pip, setuptools, or wheel separately.
 
 ### Use an existing librealsense checkout (Linux only)
 
@@ -62,7 +64,7 @@ The setup process also creates a `.pth` file inside the **active environment** s
 Because the environment is expected to already be active, there is no additional activation step after setup. Your application can use the class in the same style as before:
 
 ```python
-from L515 import L515
+from l515 import L515
 
 camera = L515()
 camera.take_picture()
@@ -77,7 +79,7 @@ camera.close()
 A context manager is also supported:
 
 ```python
-from L515 import L515
+from l515 import L515
 
 with L515() as camera:
     camera.take_picture()
@@ -197,7 +199,7 @@ Windows uses the prebuilt SDK C API directly with `ctypes`. The project does not
 
 ### Linux
 
-Linux still compiles the C-ABI wrapper against the pinned librealsense source. Setup attempts to install compiler/USB prerequisites and RealSense udev rules when possible. If USB permissions are denied, reconnect the camera after installing udev rules instead of running the entire Python application as root.
+Linux still compiles the C-ABI wrapper against the pinned librealsense source, using librealsense's RSUSB backend. Setup attempts to install compiler, USB/udev prerequisites and RealSense udev rules when possible. This path is intended to make the source build more practical on Jetson Nano without kernel patching, although actual camera operation still depends on the installed JetPack/OS, USB power, permissions, and SDK compatibility. If USB permissions are denied, reconnect the camera after installing udev rules instead of running the entire Python application as root.
 
 macOS is not supported by this project version.
 
