@@ -1,9 +1,14 @@
-cmake_minimum_required(VERSION 3.20)
+cmake_minimum_required(VERSION 3.50...3.28)
 project(l515_native LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 14)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
+
+# Ensure third-party submodules (like librealsense) inherit the policy minimum
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/third_party/librealsense/CMakeLists.txt")
+    set(CMAKE_POLICY_VERSION_MINIMUM 3.5 CACHE STRING "Minimum policy version" FORCE)
+endif()
 
 option(L515_BUILD_WITH_BUNDLED_LIBREALSENSE
        "Build against a checked-out librealsense source tree"
