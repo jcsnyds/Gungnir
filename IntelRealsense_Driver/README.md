@@ -54,7 +54,9 @@ The **active Python environment** receives:
 
 ```text
 Windows: numpy, opencv-python, matplotlib
-Linux:   numpy, opencv-python, matplotlib, cmake, ninja
+Linux:   numpy, opencv-python, matplotlib, cmake>=3.20,<4, ninja
+
+CMake is pinned below 4.0 because the legacy librealsense v2.54.2 build scripts use compatibility settings removed in CMake 4.x. Setup checks the selected executable and reports a clear error if it still finds an incompatible version.
 ```
 
 It does **not** install `pyrealsense2`.
