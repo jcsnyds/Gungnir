@@ -185,7 +185,7 @@ def install_python_dependencies(system: str) -> None:
     run([python, "-m", "pip", "--version"])
     packages = ["numpy", "opencv-python", "matplotlib"]
     if system == "Linux":
-        packages.extend(["cmake>=3.20,<4", "ninja"])
+        packages.extend(["cmake", "ninja"])
     run([python, "-m", "pip", "install", "--upgrade", *packages])
 
 
@@ -670,14 +670,7 @@ def obtain_librealsense(project_root: Path, supplied_source: Path | None, force:
 
 
 def cmake_executable() -> str:
-    """Find a supported CMake (3.20 through 3.x) in the current environment.
-
-    librealsense v2.54.2 uses legacy CMake policy settings that fail under
-    CMake 4.x, which removed compatibility with projects declaring versions
-    older than 3.5. Dependencies therefore pin the Python CMake package below
-    4.0, and this check prevents accidentally selecting an incompatible system
-    CMake earlier/later on PATH.
-    """
+    """Find CMake installed in the current environment, then fall back to PATH."""
     python_dir = Path(sys.executable).parent
     candidates = [python_dir / "cmake.exe", python_dir / "cmake"]
 
@@ -686,48 +679,86 @@ def cmake_executable() -> str:
         path = Path(script_dir)
         candidates.extend([path / "cmake.exe", path / "cmake"])
 
-    found = shutil.which("cmake")
-    if found:
-        candidates.append(Path(found))
-
-    seen: set[str] = set()
-    detected: list[str] = []
     for candidate in candidates:
-        if not candidate.is_file():
-            continue
-        key = str(candidate.resolve())
-        if key in seen:
-            continue
-        seen.add(key)
-        try:
-            result = subprocess.run(
-                [str(candidate), "--version"],
-                check=True,
-                capture_output=True,
-                text=True,
-            )
-        except (OSError, subprocess.CalledProcessError) as exc:
-            detected.append(f"{candidate}: could not query version ({exc})")
-            continue
-
-        import re
-
-        match = re.search(r"cmake version (\d+)\.(\d+)(?:\.(\d+))?", result.stdout)
-        if not match:
-            detected.append(f"{candidate}: could not parse version")
-            continue
-        version = tuple(int(value or 0) for value in match.groups())
-        detected.append(f"{candidate}: {'.'.join(map(str, version))}")
-        if (3, 20, 0) <= version < (4, 0, 0):
+        if candidate.is_file():
             return str(candidate)
 
-    details = "\n  ".join(detected) if detected else "No CMake executable was found."
-    raise SetupError(
-        "A compatible CMake executable is required: version 3.20 or newer, but below 4.0. "
-        "The pinned librealsense v2.54.2 source fails with CMake 4.x. The setup script "
-        "installs 'cmake>=3.20,<4' into the active Python environment; check that package "
-        "installation succeeded and that its Scripts/bin directory is on PATH.\n  " + details
-    )
+    found = shutil.which("cmake")
+    if found:
+        return found
+    raise SetupError("CMake was not found after installing the Python cmake package.")
+
+
+def build_parallel_jobs() -> int:
+    """Choose a conservative native build parallelism for small ARM boards.
+
+    librealsense compiles several large C++ translation units. On Jetson Nano,
+    compiling multiple units at once can exhaust RAM and the Linux OOM killer
+    terminates the compiler, leaving CMake with the unhelpful exit code 2.
+    Users can override this with L515_BUILD_JOBS=2, etc.
+    """
+    override = os.environ.get("L515_BUILD_JOBS")
+    if override:
+        try:
+            jobs = int(override)
+        except ValueError as exc:
+            raise SetupError("L515_BUILD_JOBS must be a positive integer.") from exc
+        if jobs < 1:
+            raise SetupError("L515_BUILD_JOBS must be a positive integer.")
+        return jobs
+
+    machine = platform.machine().lower()
+    if machine in {"aarch64", "arm64", "armv8l"}:
+        return 1
+    return max(1, min(os.cpu_count() or 2, 4))
+
+
+def run_build_with_log(
+    command: list[str],
+    *,
+    cwd: Path,
+    env: dict[str, str],
+    log_path: Path,
+) -> None:
+    """Stream build output to the terminal and save it for useful diagnostics."""
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    printable = " ".join(f'"{x}"' if " " in x else x for x in command)
+    print(f"    $ {printable}")
+    print(f"    Build log: {log_path}")
+
+    with log_path.open("w", encoding="utf-8", errors="replace") as log_file:
+        try:
+            process = subprocess.Popen(
+                command,
+                cwd=cwd,
+                env=env,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                errors="replace",
+                bufsize=1,
+            )
+        except OSError as exc:
+            raise SetupError(f"Could not start the native build command: {exc}") from exc
+
+        assert process.stdout is not None
+        for line in process.stdout:
+            print(line, end="", flush=True)
+            log_file.write(line)
+            log_file.flush()
+        return_code = process.wait()
+
+    if return_code != 0:
+        try:
+            lines = log_path.read_text(encoding="utf-8", errors="replace").splitlines()
+            tail = "\n".join(lines[-70:])
+        except OSError:
+            tail = "(Could not read the build log.)"
+        raise SetupError(
+            f"Native CMake build failed with exit code {return_code}.\n"
+            f"Full build log: {log_path}\n\n"
+            f"Last build-output lines:\n{tail}"
+        )
 
 
 def configure_and_build(
@@ -765,10 +796,17 @@ def configure_and_build(
     log("Configuring the native L515 backend")
     run(configure, cwd=project_root, env=build_env)
 
-    build = [cmake, "--build", str(build_dir), "--parallel"]
+    jobs = build_parallel_jobs()
+    build = [cmake, "--build", str(build_dir), "--parallel", str(jobs)]
+    build_log = project_root / ".cache" / "native_build.log"
 
-    log("Building the native L515 backend")
-    run(build, cwd=project_root, env=build_env)
+    log(f"Building the native L515 backend with {jobs} parallel job(s)")
+    run_build_with_log(
+        build,
+        cwd=project_root,
+        env=build_env,
+        log_path=build_log,
+    )
 
     names = NATIVE_LIBRARY_NAMES[system]
     for name in names:

@@ -54,9 +54,7 @@ The **active Python environment** receives:
 
 ```text
 Windows: numpy, opencv-python, matplotlib
-Linux:   numpy, opencv-python, matplotlib, cmake>=3.20,<4, ninja
-
-CMake is pinned below 4.0 because the legacy librealsense v2.54.2 build scripts use compatibility settings removed in CMake 4.x. Setup checks the selected executable and reports a clear error if it still finds an incompatible version.
+Linux:   numpy, opencv-python, matplotlib, cmake, ninja
 ```
 
 It does **not** install `pyrealsense2`.
@@ -154,6 +152,11 @@ Useful options:
 
 --test-camera
     Instantiate the L515 and capture one frame after setup.
+
+L515_BUILD_JOBS=1
+    Optional environment variable controlling native compilation parallelism.
+    The default is one job on ARM64 (including Jetson Nano) to reduce memory
+    pressure; desktop Linux defaults to at most four jobs.
 ```
 
 Examples:
@@ -201,7 +204,7 @@ Windows uses the prebuilt SDK C API directly with `ctypes`. The project does not
 
 ### Linux
 
-Linux still compiles the C-ABI wrapper against the pinned librealsense source, using librealsense's RSUSB backend. Setup attempts to install compiler, USB/udev prerequisites and RealSense udev rules when possible. This path is intended to make the source build more practical on Jetson Nano without kernel patching, although actual camera operation still depends on the installed JetPack/OS, USB power, permissions, and SDK compatibility. If USB permissions are denied, reconnect the camera after installing udev rules instead of running the entire Python application as root.
+Linux still compiles the C-ABI wrapper against the pinned librealsense source, using librealsense's RSUSB backend. Setup attempts to install compiler, USB/udev prerequisites and RealSense udev rules when possible. This path is intended to make the source build more practical on Jetson Nano without kernel patching, although actual camera operation still depends on the installed JetPack/OS, USB power, permissions, and SDK compatibility. On ARM64, compilation uses one job by default to reduce memory pressure; change `L515_BUILD_JOBS` only if the board has enough RAM/swap. Build output is saved to `.cache/native_build.log`. If the native build fails, setup prints the end of that log to help identify the actual compiler/CMake error. If USB permissions are denied, reconnect the camera after installing udev rules instead of running the entire Python application as root.
 
 macOS is not supported by this project version.
 
