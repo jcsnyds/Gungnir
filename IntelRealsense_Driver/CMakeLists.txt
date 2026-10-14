@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.50...3.28)
+cmake_minimum_required(VERSION 3.28...3.50)
 project(l515_native LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 14)
