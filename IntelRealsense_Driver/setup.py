@@ -27,7 +27,6 @@ import tempfile
 import urllib.request
 from pathlib import Path
 
-
 LIBREALSENSE_VERSION = "2.54.2"
 LIBREALSENSE_URL = (
     "https://github.com/realsenseai/librealsense/"
@@ -57,10 +56,10 @@ def log(message: str) -> None:
 
 
 def run(
-    command: list[str],
-    *,
-    cwd: Path | None = None,
-    env: dict[str, str] | None = None,
+        command: list[str],
+        *,
+        cwd: Path | None = None,
+        env: dict[str, str] | None = None,
 ) -> None:
     printable = " ".join(f'"{x}"' if " " in x else x for x in command)
     print(f"    $ {printable}")
@@ -634,7 +633,6 @@ def patch_rsutils_sources(source_dir: Path) -> None:
     version_h = source_dir / "third-party" / "rsutils" / "include" / "rsutils" / "version.h"
     version_cpp = source_dir / "third-party" / "rsutils" / "src" / "version.cpp"
 
-    # Patch version.h safely
     if version_h.is_file():
         content = version_h.read_text(encoding="utf-8", errors="ignore")
         if "#include <cstdint>" not in content:
@@ -643,7 +641,6 @@ def patch_rsutils_sources(source_dir: Path) -> None:
                 version_h.write_text(content, encoding="utf-8")
                 log("Patched version.h to include <cstdint>")
 
-    # Patch version.cpp safely
     if version_cpp.is_file():
         content = version_cpp.read_text(encoding="utf-8", errors="ignore")
         if "#include <cstdint>" not in content:
@@ -690,11 +687,11 @@ def build_parallel_jobs() -> int:
 
 
 def run_build_with_log(
-    command: list[str],
-    *,
-    cwd: Path,
-    env: dict[str, str],
-    log_path: Path,
+        command: list[str],
+        *,
+        cwd: Path,
+        env: dict[str, str],
+        log_path: Path,
 ) -> None:
     log_path.parent.mkdir(parents=True, exist_ok=True)
     printable = " ".join(f'"{x}"' if " " in x else x for x in command)
@@ -737,16 +734,15 @@ def run_build_with_log(
 
 
 def configure_and_build(
-    project_root: Path,
-    source_dir: Path,
-    force: bool,
+        project_root: Path,
+        source_dir: Path,
+        force: bool,
 ) -> Path:
     build_dir = project_root / "build"
     if force and build_dir.exists():
         log("Removing previous native build directory")
         shutil.rmtree(build_dir)
 
-    # Safely patch rsutils headers/sources for modern GCC compilers
     patch_rsutils_sources(source_dir)
 
     cmake = cmake_executable()
@@ -802,6 +798,30 @@ def configure_and_build(
     )
 
 
+def install_package_editable(project_root: Path) -> None:
+    """Install the l515 package in editable mode so it can be imported anywhere in the environment."""
+    log("Installing l515 package into the virtual environment in editable mode")
+
+
+python_dir = project_root / "python"
+
+# Create a minimal setup.py inside python/ if it doesn't exist so pip can install it
+py_setup = python_dir / "setup.py"
+if not py_setup.is_file():
+    py_setup.write_text(
+        'from setuptools import setup, find_packages\n\n'
+        'setup(\n'
+        '    name="l515",\n'
+        '    version="1.0.0",\n'
+        '    packages=find_packages(),\n'
+        '    include_package_data=True,\n'
+        ')\n',
+        encoding="utf-8"
+    )
+
+run([sys.executable, "-m", "pip", "install", "-e", str(python_dir)])
+
+
 def main() -> int:
     python_version_ok()
     args = parse_args()
@@ -817,7 +837,6 @@ def main() -> int:
         runtime_dir = install_windows_sdk(project_root, args.force)
         smoke_test_windows_runtime(project_root, runtime_dir)
     elif system == "Linux":
-        # Pass --force to obtain_librealsense if the existing source tree has a corrupted/malformed patch
         source_dir = obtain_librealsense(project_root, args.source_dir, args.force)
         native_lib = configure_and_build(project_root, source_dir, args.force)
         destination = project_root / "python" / "native_runtime"
@@ -828,6 +847,9 @@ def main() -> int:
         if args.test_camera:
             log("Running camera smoke test")
             run([sys.executable, "examples/test_l515.py"], cwd=project_root / "python")
+
+    # Automatically install l515 globally inside the active virtual environment
+    install_package_editable(project_root)
 
     log("Setup completed successfully!")
     return 0
