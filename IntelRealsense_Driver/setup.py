@@ -799,23 +799,22 @@ def configure_and_build(
 
 
 def install_package_editable(project_root: Path) -> None:
-    """Install the l515 package in editable mode so it can be imported anywhere in the environment."""
-    log("Installing l515 package into the virtual environment in editable mode")
+    """Install the l515 module globally in editable mode using py_modules."""
+    log("Installing l515 module into the virtual environment in editable mode")
     python_dir = project_root / "python"
 
-    # Create a minimal setup.py inside python/ if it doesn't exist so pip can install it
+    # Create a correct setup.py inside python/ specifying py_modules instead of find_packages()
     py_setup = python_dir / "setup.py"
-    if not py_setup.is_file():
-        py_setup.write_text(
-            'from setuptools import setup, find_packages\n\n'
-            'setup(\n'
-            '    name="l515",\n'
-            '    version="1.0.0",\n'
-            '    packages=find_packages(),\n'
-            '    include_package_data=True,\n'
-            ')\n',
-            encoding="utf-8"
-        )
+    py_setup.write_text(
+        'from setuptools import setup\n\n'
+        'setup(\n'
+        '    name="l515",\n'
+        '    version="1.0.0",\n'
+        '    py_modules=["l515", "l515_windows"],\n'
+        '    include_package_data=True,\n'
+        ')\n',
+        encoding="utf-8"
+    )
 
     run([sys.executable, "-m", "pip", "install", "-e", str(python_dir)])
 
@@ -846,7 +845,6 @@ def main() -> int:
             log("Running camera smoke test")
             run([sys.executable, "examples/test_l515.py"], cwd=project_root / "python")
 
-    # Automatically install l515 globally inside the active virtual environment
     install_package_editable(project_root)
 
     log("Setup completed successfully!")
