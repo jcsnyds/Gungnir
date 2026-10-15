@@ -35,8 +35,8 @@ import os
 import platform
 from pathlib import Path
 from typing import Optional, Sequence
-
 import numpy as np
+import cv2
 
 
 _ERROR_BUFFER_SIZE = 4096
@@ -260,7 +260,7 @@ class L515:
     # ------------------------------------------------------------------
     # Camera API
     # ------------------------------------------------------------------
-    def take_picture(self) -> bool:
+    def capture_image(self) -> bool:
         """Capture one aligned color/depth frame pair."""
         if self._windows_backend is not None:
             if not self.running:
@@ -316,12 +316,6 @@ class L515:
         return self.color_image
 
     def get_k(self) -> np.ndarray:
-        """Return the raw depth-stream intrinsic matrix K."""
-        if self._windows_backend is not None:
-            return self._windows_backend.get_k()
-        return self._get_k(self._dll.l515_get_depth_k)
-
-    def get_aligned_k(self) -> np.ndarray:
         """Return the color intrinsic matrix K used by depth aligned to color."""
         if self._windows_backend is not None:
             return self._windows_backend.get_aligned_k()
@@ -341,12 +335,7 @@ class L515:
         )
         return np.asarray(values, dtype=np.float32).reshape(3, 3).copy()
 
-    def show_picture(self) -> None:
-        """Capture and display color/depth side-by-side using OpenCV."""
-        import cv2
-
-        self.take_picture()
-
+    def show_image(self) -> None:
         assert self.depth_image is not None
         assert self.color_image is not None
 
@@ -369,45 +358,21 @@ class L515:
         cv2.imshow("Align Example", images)
         cv2.waitKey(1)
 
-    def show_RGB_DepthMap(self) -> None:
-        """Display an interactive 3-D scatter plot of the latest RGB/depth frame."""
-        import matplotlib.pyplot as plt
+    def capture_and_show_image(self) -> None:
+        """Capture and display color/depth side-by-side using OpenCV."""
 
-        if self.depth_image is None or self.color_image is None:
-            self.take_picture()
+        self.capture_image()
+        self.show_image()
 
-        assert self.depth_image is not None
-        assert self.color_image is not None
+    def save_RGB(self):
+        np.save("rgb.npy", self.color_image)
 
-        x_indices = np.arange(self.depth_image.shape[1])
-        y_indices = np.arange(self.depth_image.shape[0])
-        X, Y = np.meshgrid(x_indices, y_indices)
-        x_plot = X.ravel()
-        y_plot = Y.ravel()
-        z_plot = self.depth_image.ravel()
-        c_plot = self.color_image.reshape(-1, 3) / 255.0
+    def save_depth(self):
+        np.save("depth.npy", self.depth_image)
 
-        downsample_rate = 25
-        x_plot = x_plot[::downsample_rate]
-        y_plot = y_plot[::downsample_rate]
-        z_plot = z_plot[::downsample_rate]
-        c_plot = c_plot[::downsample_rate]
-
-        fig = plt.figure(figsize=(10, 8))
-        ax = fig.add_subplot(projection="3d")
-        ax.scatter(
-            x_plot,
-            y_plot,
-            z_plot,
-            c=c_plot,
-            s=5,
-            alpha=0.8,
-        )
-        ax.set_xlabel("X Axis (Columns)")
-        ax.set_ylabel("Y Axis (Rows)")
-        ax.set_zlabel("Z Axis (Height)")
-        ax.set_title("3D Scatter Plot from 2D NumPy Arrays")
-        plt.show(block=True)
+    def save_RGBD(self):
+        rgbd = np.dstack((self.color_image, self.depth_image))
+        np.save("rgbd.npy", rgbd)
 
     def close(self) -> None:
         """Stop streaming and release the native camera handle."""

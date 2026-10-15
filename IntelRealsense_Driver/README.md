@@ -67,7 +67,7 @@ Because the environment is expected to already be active, there is no additional
 from l515 import L515
 
 camera = L515()
-camera.take_picture()
+camera.capture_image()
 
 depth = camera.get_depth()
 color = camera.get_color()
@@ -82,7 +82,7 @@ A context manager is also supported:
 from l515 import L515
 
 with L515() as camera:
-    camera.take_picture()
+    camera.capture_image()
     depth = camera.get_depth()
     color = camera.get_color()
 ```

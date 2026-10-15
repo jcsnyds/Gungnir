@@ -4,11 +4,11 @@ from l515 import L515
 camera = L515()
 
 # Get the Intrinsic K matrix for the camera
-K = camera.get_aligned_k()
+K = camera.get_k()
 print(K)
 
 # Take an image and store it inside the L515 Object
-camera.take_picture()
+camera.capture_image()
 
 # There are 2 ways to get the RGB image and Depth map
 # Method 1: Get Functions
@@ -28,12 +28,21 @@ print(f"Depth Map Shape:{depth_map.shape}")
 print(f"RGB Image Shape:{color_image.shape}")
 
 # Take a new picture and show it
-camera.show_picture()
+camera.capture_and_show_image()
 
-# Plot the depth map
-camera.show_RGB_DepthMap()
+# Show the last image taken
+camera.show_image()
+
+# Save just RGB
+camera.save_RGB()
+
+# Save just depth
+camera.save_depth()
+
+# Save RGBD
+camera.save_RGBD()
 
 # Show camera stream
 for i in range(1000):
-    camera.show_picture()
+    camera.capture_and_show_image()
 

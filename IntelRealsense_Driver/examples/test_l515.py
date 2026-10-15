@@ -12,9 +12,9 @@ with L515() as camera:
     print("Depth K:\n", camera.get_k())
     print("Aligned/color K:\n", camera.get_aligned_k())
 
-    camera.take_picture()
+    camera.capture_image()
     print("Depth shape:", camera.get_depth().shape)
     print("Color shape:", camera.get_color().shape)
     print("Depth range (m):", camera.get_depth().min(), camera.get_depth().max())
 
-    camera.show_picture()
+    camera.capture_and_show_image()

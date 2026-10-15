@@ -504,7 +504,6 @@ def configure_udev_rules() -> None:
     sudo_command(["udevadm", "control", "--reload-rules"])
     sudo_command(["udevadm", "trigger"])
 
-    # Attempt to add current user to plugdev group
     user = os.environ.get("USER") or os.environ.get("SUDO_USER")
     if user:
         try:
@@ -517,6 +516,9 @@ def configure_udev_rules() -> None:
 def ensure_system_prerequisites(system: str, skip: bool) -> Path | None:
     if skip:
         log("Skipping OS-level prerequisite installation by request")
+        return None
+
+    if system == "Windows":
         return None
 
     if system == "Linux":
@@ -565,7 +567,6 @@ def ensure_system_prerequisites(system: str, skip: bool) -> Path | None:
             elif manager == "zypper":
                 sudo_command(["zypper", "--non-interactive", "install", *packages])
 
-        # Automatically configure udev rules to fix power state and device access issues
         configure_udev_rules()
         return None
 
