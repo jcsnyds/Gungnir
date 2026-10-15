@@ -481,6 +481,39 @@ def smoke_test_windows_runtime(project_root: Path, runtime_dir: Path) -> None:
     print(import_probe.stdout.strip())
 
 
+def configure_udev_rules() -> None:
+    """Automatically install udev rules for Intel RealSense devices to resolve power state / permission errors."""
+    log("Configuring Intel RealSense udev rules for USB permissions")
+    rules_path = Path("/etc/udev/rules.d/99-realsense-libusb.rules")
+    rule_content = 'SUBSYSTEM=="usb", ATTR{idVendor}=="8086", MODE="0666", GROUP="plugdev"\n'
+
+    needs_write = True
+    if rules_path.is_file():
+        try:
+            if rules_path.read_text(encoding="utf-8") == rule_content:
+                needs_write = False
+        except Exception:
+            pass
+
+    if needs_write:
+        temp_rule = Path("/tmp/99-realsense-libusb.rules")
+        temp_rule.write_text(rule_content, encoding="utf-8")
+        sudo_command(["cp", str(temp_rule), str(rules_path)])
+        sudo_command(["chmod", "644", str(rules_path)])
+
+    sudo_command(["udevadm", "control", "--reload-rules"])
+    sudo_command(["udevadm", "trigger"])
+
+    # Attempt to add current user to plugdev group
+    user = os.environ.get("USER") or os.environ.get("SUDO_USER")
+    if user:
+        try:
+            run(["sudo", "usermod", "-aG", "plugdev", user], check=False)
+            log(f"Added user '{user}' to the 'plugdev' group")
+        except Exception:
+            pass
+
+
 def ensure_system_prerequisites(system: str, skip: bool) -> Path | None:
     if skip:
         log("Skipping OS-level prerequisite installation by request")
@@ -508,30 +541,32 @@ def ensure_system_prerequisites(system: str, skip: bool) -> Path | None:
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
             ).returncode == 0
-        if compiler_ready and pkg_config_ready and usb_ready and openssl_ready and udev_ready:
-            return None
 
-        package_info = linux_package_manager()
-        if package_info is None:
-            raise SetupError(
-                "Could not identify a supported Linux package manager. Install a C++17-capable "
-                "compiler, make, pkg-config, libusb-1.0/libudev development headers, and OpenSSL headers, "
-                "then rerun setup.py."
-            )
+        if not (compiler_ready and pkg_config_ready and usb_ready and openssl_ready and udev_ready):
+            package_info = linux_package_manager()
+            if package_info is None:
+                raise SetupError(
+                    "Could not identify a supported Linux package manager. Install a C++17-capable "
+                    "compiler, make, pkg-config, libusb-1.0/libudev development headers, and OpenSSL headers, "
+                    "then rerun setup.py."
+                )
 
-        manager, packages = package_info
-        log(f"Installing Linux build/USB prerequisites using {manager}")
-        if manager == "apt":
-            sudo_command(["apt-get", "update"])
-            sudo_command(["apt-get", "install", "-y", *packages])
-        elif manager == "dnf":
-            sudo_command(["dnf", "install", "-y", *packages])
-        elif manager == "yum":
-            sudo_command(["yum", "install", "-y", *packages])
-        elif manager == "pacman":
-            sudo_command(["pacman", "-Sy", "--needed", "--noconfirm", *packages])
-        elif manager == "zypper":
-            sudo_command(["zypper", "--non-interactive", "install", *packages])
+            manager, packages = package_info
+            log(f"Installing Linux build/USB prerequisites using {manager}")
+            if manager == "apt":
+                sudo_command(["apt-get", "update"])
+                sudo_command(["apt-get", "install", "-y", *packages])
+            elif manager == "dnf":
+                sudo_command(["dnf", "install", "-y", *packages])
+            elif manager == "yum":
+                sudo_command(["yum", "install", "-y", *packages])
+            elif manager == "pacman":
+                sudo_command(["pacman", "-Sy", "--needed", "--noconfirm", *packages])
+            elif manager == "zypper":
+                sudo_command(["zypper", "--non-interactive", "install", *packages])
+
+        # Automatically configure udev rules to fix power state and device access issues
+        configure_udev_rules()
         return None
 
     raise SetupError(f"Unsupported operating system: {system}")
@@ -803,7 +838,6 @@ def install_package_editable(project_root: Path) -> None:
     log("Installing l515 module into the virtual environment in editable mode")
     python_dir = project_root / "python"
 
-    # Create a correct setup.py inside python/ specifying py_modules instead of find_packages()
     py_setup = python_dir / "setup.py"
     py_setup.write_text(
         'from setuptools import setup\n\n'
