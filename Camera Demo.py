@@ -1,4 +1,4 @@
-from L515 import L515
+from l515 import L515
 
 # Create a L515 object
 camera = L515()
