@@ -801,25 +801,23 @@ def configure_and_build(
 def install_package_editable(project_root: Path) -> None:
     """Install the l515 package in editable mode so it can be imported anywhere in the environment."""
     log("Installing l515 package into the virtual environment in editable mode")
+    python_dir = project_root / "python"
 
+    # Create a minimal setup.py inside python/ if it doesn't exist so pip can install it
+    py_setup = python_dir / "setup.py"
+    if not py_setup.is_file():
+        py_setup.write_text(
+            'from setuptools import setup, find_packages\n\n'
+            'setup(\n'
+            '    name="l515",\n'
+            '    version="1.0.0",\n'
+            '    packages=find_packages(),\n'
+            '    include_package_data=True,\n'
+            ')\n',
+            encoding="utf-8"
+        )
 
-python_dir = project_root / "python"
-
-# Create a minimal setup.py inside python/ if it doesn't exist so pip can install it
-py_setup = python_dir / "setup.py"
-if not py_setup.is_file():
-    py_setup.write_text(
-        'from setuptools import setup, find_packages\n\n'
-        'setup(\n'
-        '    name="l515",\n'
-        '    version="1.0.0",\n'
-        '    packages=find_packages(),\n'
-        '    include_package_data=True,\n'
-        ')\n',
-        encoding="utf-8"
-    )
-
-run([sys.executable, "-m", "pip", "install", "-e", str(python_dir)])
+    run([sys.executable, "-m", "pip", "install", "-e", str(python_dir)])
 
 
 def main() -> int:
