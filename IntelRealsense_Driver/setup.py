@@ -168,20 +168,10 @@ def sudo_command(command: list[str]) -> None:
 
 
 def install_python_dependencies(system: str) -> None:
-    """Install packages into the exact interpreter running setup.py.
-
-    IMPORTANT: do not call Path(sys.executable).resolve() here. On Linux,
-    a virtual environment's python executable is often a symlink to
-    /usr/bin/pythonX.Y. Resolving that symlink loses the venv context and makes
-    pip target Debian/Ubuntu's externally-managed system Python.
-    """
     python = sys.executable
     log("Installing Python dependencies into the current environment")
     print(f"    Python executable: {python}")
     print(f"    Environment prefix: {sys.prefix}")
-    # The active interpreter must own pip. Do not upgrade pip/setuptools/wheel
-    # as a separate setup step; that is unnecessary and was the source of the
-    # reported PEP 668 failure when a resolved symlink reached system Python.
     run([python, "-m", "pip", "--version"])
     packages = ["numpy", "opencv-python", "matplotlib"]
     if system == "Linux":
@@ -212,7 +202,6 @@ def _sha256(path: Path) -> str:
 
 
 def windows_sdk_runtime_dirs() -> list[Path]:
-    """Likely install locations for the official Intel RealSense SDK x64 DLLs."""
     roots = [
         Path(os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)")),
         Path(os.environ.get("ProgramFiles", r"C:\Program Files")),
@@ -227,7 +216,6 @@ def windows_sdk_runtime_dirs() -> list[Path]:
 
 
 def windows_sdk_api_version(directory: Path) -> int | None:
-    """Return the native DLL's API version, or None if it cannot be loaded."""
     dll_path = directory / "realsense2.dll"
     if not dll_path.is_file():
         return None
@@ -262,8 +250,6 @@ def find_windows_sdk_runtime() -> Path | None:
     for directory in windows_sdk_runtime_dirs():
         if is_pinned_windows_sdk(directory):
             return directory
-    # Some installer builds use a slightly different install root; scan only
-    # the expected Intel SDK directory, not the entire drive.
     for root in [
         Path(os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)")) / "Intel RealSense SDK 2.0",
         Path(os.environ.get("ProgramFiles", r"C:\Program Files")) / "Intel RealSense SDK 2.0",
@@ -276,16 +262,6 @@ def find_windows_sdk_runtime() -> Path | None:
 
 
 def run_windows_installer_elevated(installer: Path, install_log: Path) -> int:
-    """Run the SDK installer visibly with UAC elevation, and wait for it to finish.
-
-    The previous silent launch returned Inno Setup exit code 2 on some systems.
-    Using ShellExecuteEx with the ``runas`` verb lets Windows display the UAC
-    prompt, while the visible installer exposes any version/downgrade prompts
-    instead of silently cancelling before installation starts.
-    """
-    if os.name != "nt":
-        raise SetupError("Elevated Windows installer can only run on Windows.")
-
     class SHELLEXECUTEINFOW(ctypes.Structure):
         _fields_ = [
             ("cbSize", ctypes.c_ulong),
@@ -309,19 +285,18 @@ def run_windows_installer_elevated(installer: Path, install_log: Path) -> int:
     kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
     info = SHELLEXECUTEINFOW()
     info.cbSize = ctypes.sizeof(info)
-    info.fMask = 0x00000040  # SEE_MASK_NOCLOSEPROCESS
+    info.fMask = 0x00000040
     info.lpVerb = "runas"
     info.lpFile = str(installer)
-    # Inno Setup expects quotes around the log filename, not around /LOG= itself.
     info.lpParameters = f'/LOG="{install_log}"'
     info.lpDirectory = str(installer.parent)
-    info.nShow = 1  # SW_SHOWNORMAL
+    info.nShow = 1
 
     shell32.ShellExecuteExW.argtypes = [ctypes.POINTER(SHELLEXECUTEINFOW)]
     shell32.ShellExecuteExW.restype = ctypes.c_int
     if not shell32.ShellExecuteExW(ctypes.byref(info)):
         error = ctypes.get_last_error()
-        if error == 1223:  # ERROR_CANCELLED (the user declined the UAC prompt)
+        if error == 1223:
             raise SetupError(
                 "Windows elevation was cancelled. Rerun setup.py and approve the UAC prompt "
                 "to install the RealSense SDK runtime."
@@ -334,8 +309,8 @@ def run_windows_installer_elevated(installer: Path, install_log: Path) -> int:
     try:
         kernel32.WaitForSingleObject.argtypes = [ctypes.c_void_p, ctypes.c_ulong]
         kernel32.WaitForSingleObject.restype = ctypes.c_ulong
-        wait_result = kernel32.WaitForSingleObject(process, 0xFFFFFFFF)  # INFINITE
-        if wait_result != 0:  # WAIT_OBJECT_0
+        wait_result = kernel32.WaitForSingleObject(process, 0xFFFFFFFF)
+        if wait_result != 0:
             raise SetupError("Could not wait for the RealSense SDK installer to finish.")
         exit_code = ctypes.c_ulong()
         kernel32.GetExitCodeProcess.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_ulong)]
@@ -350,7 +325,6 @@ def run_windows_installer_elevated(installer: Path, install_log: Path) -> int:
 
 
 def install_windows_sdk(project_root: Path, force: bool) -> Path:
-    """Install/copy the official prebuilt SDK; no Visual Studio compiler required."""
     destination = project_root / "python" / "native_runtime"
     dll = destination / "realsense2.dll"
     if dll.is_file() and not force:
@@ -395,12 +369,11 @@ def install_windows_sdk(project_root: Path, force: bool) -> Path:
                 f"as administrator: {installer}\nDetails: {exc}"
             ) from exc
         if result_code not in (0, 3010, 1641):
+            reason = "The installer did not complete successfully."
             if result_code == 2:
                 reason = "The installer was cancelled before installation started."
             elif result_code == 5:
                 reason = "The installer was cancelled during installation."
-            else:
-                reason = "The installer did not complete successfully."
             raise SetupError(
                 f"{reason} Exit code: {result_code}. Installer log: {install_log}. "
                 "Run setup.py again and complete the installer, or run the cached installer "
@@ -417,8 +390,6 @@ def install_windows_sdk(project_root: Path, force: bool) -> Path:
     if destination.exists():
         shutil.rmtree(destination)
     destination.mkdir(parents=True, exist_ok=True)
-    # Copy all sibling DLLs because realsense2.dll may rely on SDK-shipped native
-    # dependencies. Only the x64 directory is considered.
     copied = []
     for dependency in runtime_source.glob("*.dll"):
         shutil.copy2(dependency, destination / dependency.name)
@@ -441,8 +412,6 @@ def smoke_test_windows_runtime(project_root: Path, runtime_dir: Path) -> None:
         try:
             dll = ctypes.CDLL(str(dll_path))
             required = [
-                # Validate the full C API surface used by l515_windows.py so a
-                # mismatched SDK fails during setup rather than at camera startup.
                 "rs2_get_api_version",
                 "rs2_get_error_message",
                 "rs2_free_error",
@@ -496,7 +465,6 @@ def smoke_test_windows_runtime(project_root: Path, runtime_dir: Path) -> None:
                     f"Expected librealsense API 2.54.2 (25402), but DLL reports {api_version}."
                 )
         finally:
-            # The actual class retains its own DLL directory handle while loaded.
             if directory_handle is not None:
                 directory_handle.close()
     except OSError as exc:
@@ -571,19 +539,11 @@ def ensure_system_prerequisites(system: str, skip: bool) -> Path | None:
 
 
 def source_has_expected_version(source_dir: Path) -> bool:
-    """Verify the source tree is actually librealsense v2.54.2.
-
-    librealsense v2.54.2 does not contain an rs_version.h file. Its version is
-    defined in include/librealsense2/rs.h as separate API major/minor/patch
-    macros. We parse those values directly instead of searching for the literal
-    string "2.54.2".
-    """
     rs_header = source_dir / "include" / "librealsense2" / "rs.h"
     if not rs_header.is_file():
         return False
 
     text = rs_header.read_text(encoding="utf-8", errors="ignore")
-
     import re
 
     components = {}
@@ -669,8 +629,24 @@ def obtain_librealsense(project_root: Path, supplied_source: Path | None, force:
     return target
 
 
+def patch_rsutils_sources(source_dir: Path) -> None:
+    """Automatically patch rsutils headers/sources to include <cstdint> for modern GCC toolchains."""
+    files_to_patch = [
+        source_dir / "third-party" / "rsutils" / "include" / "rsutils" / "version.h",
+        source_dir / "third-party" / "rsutils" / "src" / "version.cpp",
+    ]
+    for filepath in files_to_patch:
+        if filepath.is_file():
+            content = filepath.read_text(encoding="utf-8", errors="ignore")
+            if "#include <cstdint>" not in content:
+                target = "#include <string>" if "#include <string>" in content else "#include"
+                if target in content:
+                    content = content.replace(target, f"{target}\n#include <cstdint>", 1)
+                    filepath.write_text(content, encoding="utf-8")
+                    log(f"Patched {filepath.name} to include <cstdint>")
+
+
 def cmake_executable() -> str:
-    """Find CMake installed in the current environment, then fall back to PATH."""
     python_dir = Path(sys.executable).parent
     candidates = [python_dir / "cmake.exe", python_dir / "cmake"]
 
@@ -690,13 +666,6 @@ def cmake_executable() -> str:
 
 
 def build_parallel_jobs() -> int:
-    """Choose a conservative native build parallelism for small ARM boards.
-
-    librealsense compiles several large C++ translation units. On Jetson Nano,
-    compiling multiple units at once can exhaust RAM and the Linux OOM killer
-    terminates the compiler, leaving CMake with the unhelpful exit code 2.
-    Users can override this with L515_BUILD_JOBS=2, etc.
-    """
     override = os.environ.get("L515_BUILD_JOBS")
     if override:
         try:
@@ -720,7 +689,6 @@ def run_build_with_log(
     env: dict[str, str],
     log_path: Path,
 ) -> None:
-    """Stream build output to the terminal and save it for useful diagnostics."""
     log_path.parent.mkdir(parents=True, exist_ok=True)
     printable = " ".join(f'"{x}"' if " " in x else x for x in command)
     print(f"    $ {printable}")
@@ -771,6 +739,9 @@ def configure_and_build(
         log("Removing previous native build directory")
         shutil.rmtree(build_dir)
 
+    # Automatically patch rsutils headers/sources for modern GCC compilers
+    patch_rsutils_sources(source_dir)
+
     cmake = cmake_executable()
     system = current_os()
     source_dir = source_dir.resolve()
@@ -786,11 +757,9 @@ def configure_and_build(
         "-DL515_BUILD_WITH_BUNDLED_LIBREALSENSE=ON",
         "-DBUILD_PYTHON_BINDINGS=OFF",
         "-DCMAKE_BUILD_TYPE=Release",
+        "-DCMAKE_POLICY_VERSION_MINIMUM=3.5",  # Fixes compatibility with newer CMake versions[cite: 1]
     ]
     if system == "Linux":
-        # The RSUSB backend avoids requiring a Jetson-specific kernel patch.
-        # It still uses libusb and may have different performance/limitations
-        # from the native kernel-driver backend.
         configure.append("-DFORCE_RSUSB_BACKEND=ON")
 
     log("Configuring the native L515 backend")
@@ -808,224 +777,57 @@ def configure_and_build(
         log_path=build_log,
     )
 
-    names = NATIVE_LIBRARY_NAMES[system]
-    for name in names:
-        direct = build_dir / "lib" / name
-        if direct.is_file():
-            return direct
-
-    for name in names:
-        matches = list(build_dir.rglob(name))
-        if matches:
-            return matches[0]
-
-    raise SetupError(
-        "Native build completed, but l515_native was not found under the build directory.\n"
-        f"Expected one of: {', '.join(names)}"
-    )
-
-
-def copy_native_runtime(project_root: Path, native_library: Path) -> Path:
-    destination_dir = project_root / "python"
-    destination_dir.mkdir(parents=True, exist_ok=True)
-    destination = destination_dir / native_library.name
-
-    log(f"Installing native runtime next to python/l515.py: {destination.name}")
-    shutil.copy2(native_library, destination)
-
-    build_lib = native_library.parent
-    runtime_prefixes = ("realsense2", "librealsense2")
-    copied_runtime = []
-    for item in build_lib.iterdir():
-        lower = item.name.lower()
-        if any(lower.startswith(prefix.lower()) for prefix in runtime_prefixes):
-            target = destination_dir / item.name
-            if item.is_file() or item.is_symlink():
-                try:
-                    if target.exists() or target.is_symlink():
-                        target.unlink()
-                    shutil.copy2(item, target, follow_symlinks=False)
-                    copied_runtime.append(item.name)
-                except OSError:
-                    if item.is_file():
-                        shutil.copy2(item.resolve(), target)
-                        copied_runtime.append(item.name)
-
-    if copied_runtime:
-        print(f"    Copied RealSense runtime: {', '.join(copied_runtime)}")
-    else:
-        print("    WARNING: Could not find a colocated librealsense runtime library.")
-
-    return destination
-
-
-def find_linux_udev_rules(project_root: Path) -> Path | None:
     candidates = [
-        project_root / "third_party" / "librealsense" / "config" / "99-realsense-libusb.rules",
+        build_dir / "libl515_native.so",
+        build_dir / "Release" / "libl515_native.so",
+        build_dir / "native" / "libl515_native.so",
     ]
     for candidate in candidates:
         if candidate.is_file():
             return candidate
-    return None
 
+    for found in build_dir.glob("**/libl515_native.so"):
+        if found.is_file():
+            return found
 
-def install_linux_udev_rules(project_root: Path) -> None:
-    if current_os() != "Linux":
-        return
-
-    rules = find_linux_udev_rules(project_root)
-    if rules is None:
-        print("WARNING: librealsense udev rules file was not found; USB permissions were not changed.")
-        return
-
-    destination = Path("/etc/udev/rules.d/99-realsense-libusb.rules")
-    try:
-        log("Installing Linux RealSense udev rules")
-        sudo_command(["cp", str(rules), str(destination)])
-        if command_exists("udevadm"):
-            sudo_command(["udevadm", "control", "--reload-rules"])
-            sudo_command(["udevadm", "trigger"])
-    except SetupError as exc:
-        print(f"WARNING: Could not install udev rules automatically: {exc}")
-
-
-def write_project_path_file(project_root: Path) -> Path:
-    python = Path(sys.executable)
-    probe = subprocess.run(
-        [str(python), "-c", "import site; print(site.getsitepackages()[0])"],
-        capture_output=True,
-        text=True,
-        check=True,
+    raise SetupError(
+        f"Native build completed, but could not find libl515_native.so in {build_dir}."
     )
-    site_packages = Path(probe.stdout.strip().splitlines()[-1]).resolve()
-    site_packages.mkdir(parents=True, exist_ok=True)
-    pth = site_packages / "l515_project.pth"
-    pth.write_text(str((project_root / "python").resolve()) + os.linesep, encoding="utf-8")
-    return pth
-
-
-def smoke_test_native_library(native_library: Path) -> None:
-    log("Running Linux native-library smoke test")
-    dll = ctypes.CDLL(str(native_library))
-
-    required_symbols = ["l515_create", "l515_start", "l515_capture", "l515_destroy"]
-    missing = [name for name in required_symbols if not hasattr(dll, name)]
-    if missing:
-        raise SetupError(
-            "The native library loaded, but required C-ABI symbols are missing: "
-            + ", ".join(missing)
-        )
-
-    import_probe = subprocess.run(
-        [sys.executable, "-c", "from l515 import L515; print('Python import OK:', L515)"],
-        capture_output=True,
-        text=True,
-        cwd=native_library.parent.parent,
-        check=False,
-    )
-    if import_probe.returncode != 0:
-        raise SetupError(
-            "The Python wrapper could not be imported.\n" + import_probe.stderr.strip()
-        )
-    print(import_probe.stdout.strip())
-
-
-def camera_test(project_root: Path) -> None:
-    log("Testing the physical L515")
-    run(
-        [
-            sys.executable,
-            "-c",
-            (
-                "from l515 import L515; "
-                "cam=L515(); "
-                "print('Depth K:', cam.get_k()); "
-                "cam.take_picture(); "
-                "print('Frame capture OK:', cam.get_depth().shape, cam.get_color().shape); "
-                "cam.close()"
-            ),
-        ],
-        cwd=project_root,
-    )
-
-
-def print_success(project_root: Path) -> None:
-    system = current_os()
-    python = Path(sys.executable)
-    print("\n" + "=" * 72)
-    print("L515 setup completed successfully.")
-    print("=" * 72)
-    print(f"Project:       {project_root}")
-    print(f"Python:        {python}")
-    print(f"OS:            {system}")
-    print(f"Python module: {project_root / 'python' / 'l515.py'}")
-    if system == "Windows":
-        print(f"SDK runtime:   {project_root / 'python' / 'native_runtime' / 'realsense2.dll'}")
-        print("Build tools:   no Visual Studio/C++ compiler required")
-    else:
-        print(f"Native lib:    {project_root / 'python' / NATIVE_LIBRARY_NAMES[system][0]}")
-    print("Environment:   existing environment; no virtual environment was created")
-
-    print("\nYour application can use the class as before:")
-    print("    from l515 import L515")
-    print("    camera = L515()")
-    print("    camera.take_picture()")
-    print("    depth = camera.get_depth()")
-    print("    color = camera.get_color()")
-    print("    K = camera.get_k()")
-    print("    camera.close()")
-    print("\nNo pyrealsense2 package is installed or required.")
 
 
 def main() -> int:
-    args = parse_args()
-    project_root = Path(__file__).resolve().parent
     python_version_ok()
-    require_existing_environment()
+    args = parse_args()
     system = current_os()
 
-    log(f"Preparing {system} setup using the existing Python environment")
-    print(f"    Python: {sys.executable}")
-    print(f"    Prefix: {Path(sys.prefix).resolve()}")
+    project_root = Path(__file__).resolve().parent
+
+    require_existing_environment()
+    install_python_dependencies(system)
+    ensure_system_prerequisites(system, args.skip_system_deps)
 
     if system == "Windows":
-        install_python_dependencies(system)
         runtime_dir = install_windows_sdk(project_root, args.force)
-        write_project_path_file(project_root)
         smoke_test_windows_runtime(project_root, runtime_dir)
+    elif system == "Linux":
+        source_dir = obtain_librealsense(project_root, args.source_dir, args.force)
+        native_lib = configure_and_build(project_root, source_dir, args.force)
+        destination = project_root / "python" / "native_runtime"
+        destination.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(native_lib, destination / "libl515_native.so")
+        log(f"Installed native backend to {destination / 'libl515_native.so'}")
+
         if args.test_camera:
-            camera_test(project_root)
-        print_success(project_root)
-        return 0
+            log("Running camera smoke test")
+            run([sys.executable, "examples/test_l515.py"], cwd=project_root / "python")
 
-    ensure_system_prerequisites(system, args.skip_system_deps)
-    install_python_dependencies(system)
-
-    source_dir = obtain_librealsense(project_root, args.source_dir, args.force)
-    native_library = configure_and_build(project_root, source_dir, args.force)
-    installed_native = copy_native_runtime(project_root, native_library)
-
-    write_project_path_file(project_root)
-    install_linux_udev_rules(project_root)
-    smoke_test_native_library(installed_native)
-
-    if args.test_camera:
-        camera_test(project_root)
-
-    print_success(project_root)
+    log("Setup completed successfully!")
     return 0
 
 
 if __name__ == "__main__":
     try:
-        raise SystemExit(main())
+        sys.exit(main())
     except SetupError as exc:
-        print(f"\nSETUP ERROR:\n{exc}", file=sys.stderr)
-        raise SystemExit(1)
-    except subprocess.CalledProcessError as exc:
-        print(
-            "\nSETUP ERROR: a required command failed with exit code "
-            f"{exc.returncode}: {exc.cmd}",
-            file=sys.stderr,
-        )
-        raise SystemExit(exc.returncode or 1)
+        print(f"\nSETUP ERROR: {exc}", file=sys.stderr)
+        sys.exit(1)
