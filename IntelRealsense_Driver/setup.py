@@ -630,20 +630,27 @@ def obtain_librealsense(project_root: Path, supplied_source: Path | None, force:
 
 
 def patch_rsutils_sources(source_dir: Path) -> None:
-    """Automatically patch rsutils headers/sources to include <cstdint> for modern GCC toolchains."""
-    files_to_patch = [
-        source_dir / "third-party" / "rsutils" / "include" / "rsutils" / "version.h",
-        source_dir / "third-party" / "rsutils" / "src" / "version.cpp",
-    ]
-    for filepath in files_to_patch:
-        if filepath.is_file():
-            content = filepath.read_text(encoding="utf-8", errors="ignore")
-            if "#include <cstdint>" not in content:
-                target = "#include <string>" if "#include <string>" in content else "#include"
-                if target in content:
-                    content = content.replace(target, f"{target}\n#include <cstdint>", 1)
-                    filepath.write_text(content, encoding="utf-8")
-                    log(f"Patched {filepath.name} to include <cstdint>")
+    """Safely patch rsutils headers/sources to include <cstdint> for modern GCC toolchains."""
+    version_h = source_dir / "third-party" / "rsutils" / "include" / "rsutils" / "version.h"
+    version_cpp = source_dir / "third-party" / "rsutils" / "src" / "version.cpp"
+
+    # Patch version.h safely
+    if version_h.is_file():
+        content = version_h.read_text(encoding="utf-8", errors="ignore")
+        if "#include <cstdint>" not in content:
+            if "#include <string>" in content:
+                content = content.replace("#include <string>", "#include <string>\n#include <cstdint>", 1)
+                version_h.write_text(content, encoding="utf-8")
+                log("Patched version.h to include <cstdint>")
+
+    # Patch version.cpp safely
+    if version_cpp.is_file():
+        content = version_cpp.read_text(encoding="utf-8", errors="ignore")
+        if "#include <cstdint>" not in content:
+            if '#include "version.h"' in content:
+                content = content.replace('#include "version.h"', '#include "version.h"\n#include <cstdint>', 1)
+                version_cpp.write_text(content, encoding="utf-8")
+                log("Patched version.cpp to include <cstdint>")
 
 
 def cmake_executable() -> str:
@@ -739,7 +746,7 @@ def configure_and_build(
         log("Removing previous native build directory")
         shutil.rmtree(build_dir)
 
-    # Automatically patch rsutils headers/sources for modern GCC compilers
+    # Safely patch rsutils headers/sources for modern GCC compilers
     patch_rsutils_sources(source_dir)
 
     cmake = cmake_executable()
@@ -757,7 +764,7 @@ def configure_and_build(
         "-DL515_BUILD_WITH_BUNDLED_LIBREALSENSE=ON",
         "-DBUILD_PYTHON_BINDINGS=OFF",
         "-DCMAKE_BUILD_TYPE=Release",
-        "-DCMAKE_POLICY_VERSION_MINIMUM=3.5",  # Fixes compatibility with newer CMake versions[cite: 1]
+        "-DCMAKE_POLICY_VERSION_MINIMUM=3.5",
     ]
     if system == "Linux":
         configure.append("-DFORCE_RSUSB_BACKEND=ON")
@@ -810,6 +817,7 @@ def main() -> int:
         runtime_dir = install_windows_sdk(project_root, args.force)
         smoke_test_windows_runtime(project_root, runtime_dir)
     elif system == "Linux":
+        # Pass --force to obtain_librealsense if the existing source tree has a corrupted/malformed patch
         source_dir = obtain_librealsense(project_root, args.source_dir, args.force)
         native_lib = configure_and_build(project_root, source_dir, args.force)
         destination = project_root / "python" / "native_runtime"
