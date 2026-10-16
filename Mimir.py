@@ -1,4 +1,5 @@
 import numpy as np
+import subprocess
 from pyevtk.hl import polyLinesToVTK, pointsToVTK
 
 # 1. Load your compressed arrays
@@ -66,6 +67,11 @@ polyLinesToVTK("./contact_graspnet_grippers", lx, ly, lz,
 pointsToVTK("./grasp_points", np.ascontiguousarray(contact_pts[:, 0]), 
                               np.ascontiguousarray(contact_pts[:, 1]), 
                               np.ascontiguousarray(contact_pts[:, 2]), 
+            data={"Grasp_Scores": scores})
+
+pointsToVTK("./grasp_points", np.ascontiguousarray(contact_pts[:, 0]),
+                              np.ascontiguousarray(contact_pts[:, 1]),
+                              np.ascontiguousarray(contact_pts[:, 2]),
             data={"Grasp_Scores": scores})
 
 print("\nSuccess! Generated 'contact_graspnet_grippers.vtp'")

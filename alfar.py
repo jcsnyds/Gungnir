@@ -1,4 +1,5 @@
 import numpy as np
+from l515 import L515
 
 # 1. Load the 4-channel RGB-D array (5712, 4284, 4)
 rgbd_path = "output_rgbd.npy"
