@@ -1,0 +1,7 @@
+l515.py
+l515_windows.py
+setup.py
+l515.egg-info/PKG-INFO
+l515.egg-info/SOURCES.txt
+l515.egg-info/dependency_links.txt
+l515.egg-info/top_level.txt
