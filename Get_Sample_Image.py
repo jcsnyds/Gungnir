@@ -8,7 +8,7 @@ cam.capture_image()
 np.save("Sample Images/DepthMap.npy", cam.get_depth())
 plt.imsave("Sample Images/DepthMap.png", cam.get_depth())
 
-np.save("Sample Images/ColorMap.npy", cam.get_color().)
+np.save("Sample Images/ColorMap.npy", cam.get_color())
 plt.imsave("Sample Images/ColorMap.png", cam.get_color())
 
 np.save("Sample Images/Pointcloud.npy", cam.get_pointcloud(0.1, 2.5))
