@@ -13,7 +13,7 @@ midas.eval()
 midas_transforms = torch.hub.load("intel-isl/MiDaS", "transforms")
 transform = midas_transforms.dpt_transform if model_type == "DPT_Large" else midas_transforms.small_transform
 
-img = cv2.imread("mug-1.jpg")
+img = cv2.imread("Sample Images/mug-1.jpg")
 img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
 input_batch = transform(img).to(device)
 
