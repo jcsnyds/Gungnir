@@ -6,7 +6,7 @@ cam = L515()
 cam.capture_image()
 
 np.save("Sample Images/DepthMap.npy", cam.get_depth())
-plt.imsave("Sample Images/DepthMap.png", cam.get_depth())
+plt.imsave("Sample Images/DepthMap.png", cam.get_depth()/cam.get_depth().max())
 
 np.save("Sample Images/ColorMap.npy", cam.get_color())
 plt.imsave("Sample Images/ColorMap.png", cam.get_color())
