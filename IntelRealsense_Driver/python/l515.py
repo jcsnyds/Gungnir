@@ -315,7 +315,7 @@ class L515:
             raise L515Error("No color image has been captured yet.")
         return self.color_image
 
-    def get_pointcloud(self) -> np.ndarray:
+    def get_pointcloud(self, MIN_DEPTH, MAX_DEPTH) -> np.ndarray:
         h, w = self.depth_image.shape
 
         # Define Camera Intrinsics Matrix K
