@@ -51,7 +51,8 @@ def show_image(rgb, segmap):
     """
     plt.figure()
     figManager = plt.get_current_fig_manager()
-    figManager.window.showMaximized()
+    if hasattr(figManager, "window"):
+        figManager.window.showMaximized()
     
     plt.ion()
     plt.show()
@@ -63,6 +64,7 @@ def show_image(rgb, segmap):
         cmap.set_under(alpha=0.0)   
         plt.imshow(segmap, cmap=cmap, alpha=0.5, vmin=0.0001)
     plt.draw()
+    plt.savefig("contact_graspnet_visualization.png", bbox_inches="tight")
     plt.pause(0.001)
 
 def visualize_grasps(full_pc, pred_grasps_cam, scores, plot_opencv_cam=False, pc_colors=None, gripper_openings=None, gripper_width=0.08):
