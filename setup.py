@@ -4,9 +4,9 @@ and PyTorch on Jetson Orin (JetPack 7.2, CUDA 13.2, Python 3.12).
 
 Run from the already-active virtual environment:
 
-    python install.py                      # everything
-    python install.py --skip-realsense     # Python dependencies only
-    python install.py --skip-system-deps   # unknown flags are forwarded to IntelRealsense_Driver/setup.py
+    python setup.py                      # everything
+    python setup.py --skip-realsense     # Python dependencies only
+    python setup.py --skip-system-deps   # unknown flags are forwarded to IntelRealsense_Driver/setup.py
 """
 
 from __future__ import annotations
@@ -55,6 +55,16 @@ x = torch.randn(1024, 1024, device='cuda')
 y = (x @ x).sum().item()
 print('GPU matmul sum =', y)
 sys.exit(0 if math.isfinite(y) else 1)
+"""
+
+
+# Contact-GraspNet's pointnet2 code uses tf.compat.v1.layers, which exists only on legacy Keras (tf_keras).
+TF_LEGACY_LAYERS_CHECK = """
+import tensorflow as tf
+tf.compat.v1.disable_eager_execution()
+x = tf.compat.v1.placeholder(tf.float32, [None, 8, 4])
+y = tf.compat.v1.layers.batch_normalization(x, training=True)
+print('tf.compat.v1.layers OK:', y.name)
 """
 
 
@@ -148,9 +158,9 @@ def prepare_jetson() -> None:
             pip("install", "--force-reinstall", "--no-deps", "torch", "torchvision", "--index-url", TORCH_INDEX)
 
 
-def check(label: str, code: str) -> bool:
+def check(label: str, code: str, env: dict | None = None) -> bool:
     log(f"Checking {label}")
-    ok = subprocess.run([PY, "-c", code]).returncode == 0
+    ok = subprocess.run([PY, "-c", code], env=env).returncode == 0
     print(f"    {label}: {'OK' if ok else 'FAILED'}")
     return ok
 
@@ -158,8 +168,14 @@ def check(label: str, code: str) -> bool:
 def verify() -> int:
     tf_ok = check("TensorFlow on GPU", TF_CHECK)
     torch_ok = check("PyTorch on GPU", TORCH_CHECK)
+    if AARCH64_LINUX:
+        legacy_env = {**os.environ, "TF_USE_LEGACY_KERAS": "1"}
+        legacy_ok = check("tf.compat.v1.layers (needs TF_USE_LEGACY_KERAS=1)", TF_LEGACY_LAYERS_CHECK, env=legacy_env)
+        tf_ok = tf_ok and legacy_ok
     if tf_ok and torch_ok:
         log("All GPU checks passed")
+        if AARCH64_LINUX:
+            print("    Reminder: export TF_USE_LEGACY_KERAS=1 (or set it at the top of inference.py) before running Contact-GraspNet.")
         return 0
     if AARCH64_LINUX:
         print(
@@ -194,6 +210,12 @@ def main() -> int:
 
     log("Installing requirements.txt")
     pip("install", "-r", REQUIREMENTS)
+
+    if AARCH64_LINUX:
+        # tf-keras lists `tensorflow` as a dependency; without --no-deps pip would install PyPI's
+        # CPU-only TensorFlow on top of the Jetson wheel. Pinned to the 2.21 line to match the wheel.
+        log("Installing legacy Keras (tf-keras) for tf.compat.v1.layers")
+        pip("install", "--no-deps", "tf-keras>=2.21,<2.22")
 
     return 0 if args.skip_verify else verify()
 
