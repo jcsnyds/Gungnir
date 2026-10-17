@@ -46,7 +46,7 @@ print(f"Successfully saved to {output_path}")
 #================================================================
 try:
     print("\nRunning Contact-GraspNet Inference...")
-    subprocess.run(['python', 'contact_graspnet/contact_graspnet/inference.py', f'--np_path=../../{output_path}',
+    subprocess.run(['python', 'contact_graspnet/contact_graspnet/inference.py', f'--input_paths={output_path}',
                    '--ckpt_dir=contact_graspnet/checkpoints/scene_test_2048_bs3_hor_sigma_0025', '--forward_passes=5',
                     f'--z_range=[{MIN_DEPTH},{MAX_DEPTH}]'])
     print("Successfully ran Contact-GraspNet Inference and saved output")
