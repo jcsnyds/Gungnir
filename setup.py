@@ -18,6 +18,8 @@ import platform
 import subprocess
 import sys
 from pathlib import Path
+import shlex
+import shutil
 
 ROOT = Path(__file__).resolve().parent
 PY = sys.executable  # always the venv's interpreter, never whatever `python` resolves to
@@ -158,6 +160,170 @@ def prepare_jetson() -> None:
             pip("install", "--force-reinstall", "--no-deps", "torch", "torchvision", "--index-url", TORCH_INDEX)
 
 
+
+def build_contact_graspnet_tfops() -> None:
+    """Build Contact-GraspNet TensorFlow custom ops natively for Jetson Orin."""
+    if not AARCH64_LINUX:
+        log("Skipping Contact-GraspNet CUDA ops: not running on ARM64 Linux")
+        return
+
+    import tensorflow as tf
+
+    ops_root = ROOT / "contact_graspnet" / "pointnet2" / "tf_ops"
+    cuda_home = Path(os.environ.get("CUDA_HOME", "/usr/local/cuda")).resolve()
+    nvcc = cuda_home / "bin" / "nvcc"
+    cuda_lib = cuda_home / "targets" / "sbsa-linux" / "lib"
+    tf_lib = Path(tf.__file__).resolve().parent
+
+    if not nvcc.is_file():
+        sys.exit(f"CUDA compiler not found: {nvcc}")
+
+    if not cuda_lib.is_dir():
+        sys.exit(f"CUDA library directory not found: {cuda_lib}")
+
+    build_info = tf.sysconfig.get_build_info()
+    tf_cuda = build_info.get("cuda_version", "unknown")
+
+    log("Building Contact-GraspNet TensorFlow operators")
+    print(f"    Architecture: {platform.machine()}, CUDA target: sm_87")
+    print(f"    TensorFlow: {tf.__version__}, built against CUDA {tf_cuda}")
+    print(f"    CUDA compiler: {nvcc}")
+    print(f"    CUDA runtime directory: {cuda_lib}")
+
+    if str(tf_cuda) != "13.2":
+        print(
+            "WARNING: TensorFlow's CUDA build version differs from the "
+            "installed toolkit. Compilation may succeed while runtime "
+            "compatibility remains unresolved."
+        )
+
+    backup_dir = ROOT.parent / "op_backup"
+    backup_dir.mkdir(parents=True, exist_ok=True)
+
+    for name in (
+        "sampling/tf_sampling_so.so",
+        "grouping/tf_grouping_so.so",
+        "3d_interpolation/tf_interpolate_so.so",
+    ):
+        original = ops_root / name
+        if original.is_file():
+            destination = backup_dir / original.name
+            if not destination.exists():
+                shutil.copy2(original, destination)
+                print(f"    Backed up {original.name} to {destination}")
+
+    env = os.environ.copy()
+    env["CUDA_HOME"] = str(cuda_home)
+    env["PATH"] = f"{cuda_home / 'bin'}:{env.get('PATH', '')}"
+    env["TF_USE_LEGACY_KERAS"] = "1"
+    env["LD_LIBRARY_PATH"] = ":".join(
+        p for p in (
+            str(tf_lib),
+            str(cuda_lib),
+            env.get("LD_LIBRARY_PATH", ""),
+        ) if p
+    )
+
+    tf_cflags = tf.sysconfig.get_compile_flags()
+    tf_lflags = tf.sysconfig.get_link_flags()
+    common_flags = ["-std=c++17", *tf_cflags]
+    cuda_link_flags = [
+        f"-L{cuda_lib}",
+        "-lcudart",
+        f"-Wl,-rpath,{cuda_lib}",
+        f"-Wl,-rpath,{tf_lib}",
+    ]
+
+    def compile_op(directory: Path, name: str) -> None:
+        """Compile a CUDA kernel and its TensorFlow wrapper."""
+        log(f"Compiling {name}")
+        kernel = f"tf_{name}_g.cu"
+        obj = f"tf_{name}_g.cu.o"
+        wrapper = f"tf_{name}.cpp"
+        output = f"tf_{name}_so.so"
+
+        run([
+            nvcc,
+            "-std=c++17",
+            "-arch=sm_87",
+            "-c", kernel,
+            "-o", obj,
+            *tf_cflags,
+            "-DGOOGLE_CUDA=1",
+            "-Xcompiler=-fPIC",
+        ], cwd=directory, env=env)
+
+        run([
+            "g++",
+            "-shared",
+            "-fPIC",
+            *common_flags,
+            wrapper,
+            obj,
+            "-o", output,
+            *tf_lflags,
+            *cuda_link_flags,
+        ], cwd=directory, env=env)
+
+    compile_op(ops_root / "sampling", "sampling")
+    compile_op(ops_root / "grouping", "grouping")
+
+    # This operator registers CPU kernels; it does not need nvcc.
+    interpolation = ops_root / "3d_interpolation"
+    log("Compiling interpolation operator")
+    run([
+        "g++",
+        "-std=c++17",
+        "-shared",
+        "-fPIC",
+        "-O2",
+        *tf_cflags,
+        "tf_interpolate.cpp",
+        "-o", "tf_interpolate_so.so",
+        *tf_lflags,
+        f"-Wl,-rpath,{tf_lib}",
+    ], cwd=interpolation, env=env)
+
+    # Confirm that all three rebuilt libraries are ARM64 ELF binaries.
+    for relative in (
+        "sampling/tf_sampling_so.so",
+        "grouping/tf_grouping_so.so",
+        "3d_interpolation/tf_interpolate_so.so",
+    ):
+        binary = ops_root / relative
+        result = subprocess.run(
+            ["file", str(binary)],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        print(f"    {result.stdout.strip()}")
+        if "ARM aarch64" not in result.stdout and "ARM64" not in result.stdout:
+            sys.exit(f"Unexpected binary architecture: {binary}")
+
+    # Smoke-test loading each library with the active TensorFlow.
+    smoke_test = """
+import os
+import tensorflow as tf
+
+root = os.environ["CONTACT_GRASPNET_TFOPS"]
+for relative in (
+    "sampling/tf_sampling_so.so",
+    "grouping/tf_grouping_so.so",
+    "3d_interpolation/tf_interpolate_so.so",
+):
+    path = os.path.join(root, relative)
+    print("Loading:", path, flush=True)
+    tf.load_op_library(path)
+    print("Loaded successfully", flush=True)
+"""
+    env["CONTACT_GRASPNET_TFOPS"] = str(ops_root)
+    run([PY, "-c", smoke_test], env=env)
+
+    log("Contact-GraspNet custom operators compiled and loaded")
+
+
+
 def check(label: str, code: str, env: dict | None = None) -> bool:
     log(f"Checking {label}")
     ok = subprocess.run([PY, "-c", code], env=env).returncode == 0
@@ -194,6 +360,11 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--skip-realsense", action="store_true", help="Skip the RealSense L515 setup.")
     parser.add_argument("--skip-verify", action="store_true", help="Skip the GPU checks at the end.")
+    parser.add_argument(
+        "--skip-tf-ops",
+        action="store_true",
+        help="Skip building Contact-GraspNet TensorFlow custom operators.",
+    )
     args, realsense_args = parser.parse_known_args()
 
     require_venv()
@@ -216,6 +387,9 @@ def main() -> int:
         # CPU-only TensorFlow on top of the Jetson wheel. Pinned to the 2.21 line to match the wheel.
         log("Installing legacy Keras (tf-keras) for tf.compat.v1.layers")
         pip("install", "--no-deps", "tf-keras>=2.21,<2.22")
+
+    if AARCH64_LINUX and not args.skip_tf_ops:
+        build_contact_graspnet_tfops()
 
     return 0 if args.skip_verify else verify()
 
