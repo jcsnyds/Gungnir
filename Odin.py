@@ -53,7 +53,7 @@ if os.path.exists(results_file):
 try:
     print("\nRunning Contact-GraspNet Inference...")
     subprocess.run(
-        [sys.executable, 'contact_graspnet/contact_graspnet/inference.py', f'--np_path={output_path}',
+        ['CUDA_LAUNCH_BLOCKING=1', 'python', 'contact_graspnet/contact_graspnet/inference.py', f'--np_path={output_path}',
          '--ckpt_dir=contact_graspnet/checkpoints/scene_test_2048_bs3_hor_sigma_0025',
          '--forward_passes=5', f'--z_range=[{MIN_DEPTH},{MAX_DEPTH}]'],
         check=True,
