@@ -4,6 +4,7 @@ import sys
 import numpy as np
 from pyevtk.hl import polyLinesToVTK, pointsToVTK
 from l515 import L515
+import tensorflow as tf
 
 #=================================================================
 # Constants
@@ -52,13 +53,30 @@ if os.path.exists(results_file):
 
 try:
     print("\nRunning Contact-GraspNet Inference...")
+
+    tf_lib = os.path.dirname(tf.__file__)
+    env = {
+        **os.environ,
+        "TF_USE_LEGACY_KERAS": "1",
+        "CUDA_LAUNCH_BLOCKING": "1",
+        "LD_LIBRARY_PATH": (
+            f"{tf_lib}:{os.environ.get('LD_LIBRARY_PATH', '')}"
+        ),
+    }
+
     subprocess.run(
-        ['python', 'contact_graspnet/contact_graspnet/inference.py', f'--np_path={output_path}',
-         '--ckpt_dir=contact_graspnet/checkpoints/scene_test_2048_bs3_hor_sigma_0025',
-         '--forward_passes=5', f'--z_range=[{MIN_DEPTH},{MAX_DEPTH}]'],
+        [
+            "python",
+            "contact_graspnet/contact_graspnet/inference.py",
+            f"--np_path={output_path}",
+            "--ckpt_dir=contact_graspnet/checkpoints/scene_test_2048_bs3_hor_sigma_0025",
+            "--forward_passes=1",
+            f"--z_range=[{MIN_DEPTH},{MAX_DEPTH}]",
+        ],
         check=True,
-        env={**os.environ, "TF_USE_LEGACY_KERAS": "1", 'CUDA_LAUNCH_BLOCKING1': '1'},
+        env=env,
     )
+
     print("Successfully ran Contact-GraspNet Inference and saved output")
 except subprocess.CalledProcessError as e:
     print(f"\nERROR: inference exited with code {e.returncode}")
