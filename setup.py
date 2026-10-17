@@ -210,7 +210,6 @@ def main() -> int:
 
     log("Installing requirements.txt")
     pip("install", "-r", REQUIREMENTS)
-    # TODO: Add sudo apt install python3-pyqt5
 
     if AARCH64_LINUX:
         # tf-keras lists `tensorflow` as a dependency; without --no-deps pip would install PyPI's

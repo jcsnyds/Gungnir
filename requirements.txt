@@ -14,7 +14,7 @@ pyevtk
 timm
 trimesh
 pyrender
-mayavi
+plotly
 
 # --- PyTorch ---------------------------------------------------------------
 # Jetson (aarch64): installed by install.py from the CUDA 13.2 index.
