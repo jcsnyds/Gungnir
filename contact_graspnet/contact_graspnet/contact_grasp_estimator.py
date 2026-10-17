@@ -313,7 +313,7 @@ class GraspEstimator:
 
         remaining_confidences = np.setdiff1d(np.arange(len(grasp_conf)), conf_idcs_greater_than[center_indexes])
         sorted_confidences = np.argsort(grasp_conf)[::-1]
-        mask = np.in1d(sorted_confidences, remaining_confidences)
+        mask = np.isin(sorted_confidences, remaining_confidences)
         sorted_remaining_confidence_idcs = sorted_confidences[mask]
         
         if with_replacement:
