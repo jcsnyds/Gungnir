@@ -1,6 +1,28 @@
-timm
-torch
-matplotlib
-numpy
+# Install with `python install.py`, not `pip install -r requirements.txt` directly.
+# On Jetson, install.py first swaps out the CPU-only TensorFlow and installs a CUDA
+# build of PyTorch, then installs this file.
+
+# Lower bounds are deliberately above Ubuntu 24.04's apt versions (numpy 1.26,
+# scipy 1.11, pandas 2.1, matplotlib 3.6). If the venv can see system site-packages,
+# pip would otherwise treat those old builds as "already satisfied" and never install
+# NumPy 2-compatible copies into the venv.
+numpy>=2
+scipy>=1.14
+pandas>=2.2
+matplotlib>=3.8
 pyevtk
-tensorflow
+timm
+
+# --- PyTorch ---------------------------------------------------------------
+# Jetson (aarch64): installed by install.py from the CUDA 13.2 index.
+torch; platform_machine != "aarch64"
+
+# --- TensorFlow --------------------------------------------------------------
+# x86-64 Linux: official CUDA build.
+tensorflow[and-cuda]; sys_platform == "linux" and platform_machine == "x86_64"
+# Windows / macOS: CPU build.
+tensorflow; sys_platform != "linux"
+# Jetson Orin (aarch64 Linux, JetPack 7.2, Python 3.12): PyPI's aarch64 wheel is
+# CPU-only, so use a community-built GPU wheel. Unofficial: skim the repo before use.
+# https://github.com/RitishKam/tensorflow-jetson-jp7
+tensorflow-jetson-jp7 @ https://github.com/RitishKam/tensorflow-jetson-jp7/releases/download/v2.21.0-jp7.2/tensorflow_jetson_jp7-2.21.0+jp7.2.cu12-cp312-cp312-manylinux_2_27_aarch64.whl ; sys_platform == "linux" and platform_machine == "aarch64"

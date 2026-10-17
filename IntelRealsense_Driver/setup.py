@@ -504,13 +504,13 @@ def configure_udev_rules() -> None:
     sudo_command(["udevadm", "control", "--reload-rules"])
     sudo_command(["udevadm", "trigger"])
 
-    user = os.environ.get("USER") or os.environ.get("SUDO_USER")
-    if user:
+    user = os.environ.get("SUDO_USER") or os.environ.get("USER")
+    if user and user != "root":
         try:
-            run(["sudo", "usermod", "-aG", "plugdev", user], check=False)
-            log(f"Added user '{user}' to the 'plugdev' group")
-        except Exception:
-            pass
+            sudo_command(["usermod", "-aG", "plugdev", user])
+            log(f"Added user '{user}' to 'plugdev' (log out and back in to apply)")
+        except (subprocess.CalledProcessError, SetupError):
+            print("    Could not add the user to 'plugdev'; the udev rule uses MODE=0666, so it is not required.")
 
 
 def ensure_system_prerequisites(system: str, skip: bool) -> Path | None:
@@ -645,7 +645,8 @@ def obtain_librealsense(project_root: Path, supplied_source: Path | None, force:
                 member_path = (root / member.name).resolve()
                 if os.path.commonpath([str(root), str(member_path)]) != str(root):
                     raise SetupError("The downloaded librealsense archive contains an unsafe path.")
-            tar.extractall(tmp_path)
+            kwargs = {"filter": "data"} if hasattr(tarfile, "data_filter") else {}
+            tar.extractall(tmp_path, **kwargs)
         extracted = tmp_path / f"librealsense-{LIBREALSENSE_VERSION}"
         if not extracted.is_dir():
             candidates = [p for p in tmp_path.iterdir() if p.is_dir()]

@@ -14,14 +14,19 @@ gripper_depth = 0.06
 gripper_width = 0.08
 jaw_depth = 0.04
 
+output_path = "input_pc.npz"
+
 #================================================================
+# Preprocessing
 # Capture image and save point cloud
 #================================================================
 
 #Capture image and get Depth Map
+print('\nCapturing Image\n')
 cam = L515()
 cam.capture_image()
 depth = cam.get_depth()
+rgb = cam.get_color()
 h, w = depth.shape
 
 # Define Camera Intrinsics Matrix K
@@ -47,29 +52,31 @@ y = (v[valid] - cy) * z / fy
 point_cloud = np.stack((x, y, z), axis=-1).astype(np.float32)
 print(f"Generated 3D Point Cloud shape: {point_cloud.shape}")
 
-# 4. Save as .npz with all keys expected by data.py (prevents UnboundLocalError)
-output_path = "input_pc.npz"
+# Save as .npz with all keys expected by data.py (prevents UnboundLocalError)
 np.savez(
     output_path,
     xyz=point_cloud,      # Core point cloud key
     pc_full=point_cloud,  # Fallback point cloud key
     K=cam_K,              # Standard camera matrix key
+    rgb=rgb,              # normal rgb image
 )
 
 print(f"Successfully saved to {output_path}")
 
 #================================================================
-# Contact Graspnet Inference
+# Model Inference
+# Run Contact Graspnet
 #================================================================
-subprocess.run(['python', 'contact_graspnet/contact_graspnet/inference.py', '--np_path=../input_pc.npz',
+subprocess.run(['python', 'contact_graspnet/contact_graspnet/inference.py', f'--np_path=../{output_path}',
                '--ckpt_dir=checkpoints/scene_test_2048_bs3_hor_sigma_0025', '--forward_passes=5',
                 f'--z_range=[{MIN_DEPTH},{MAX_DEPTH}]', '--no_visualize'])
 
 #================================================================
-# Process Model Predictions
+# Post Processing
+# Process Model Predictions and Save Outputs
 #================================================================
 
-# 1. Load your compressed arrays
+# Load your compressed arrays
 data = np.load("contact_graspnet/results/predictions_input_pc.npz", allow_pickle=True)
 print("Your actual keys are:", data.files)
 
@@ -80,7 +87,7 @@ pred_grasps_cam = np.array(data['pred_grasps_cam'].item()[-1], dtype=np.float32)
 num_grasps = len(scores)
 print(f"Processing {num_grasps} grasps to match standard Contact-GraspNet layout...")
 
-# 2. Define standard parallel-jaw gripper dimensions (in meters)
+# Define standard parallel-jaw gripper dimensions (in meters)
 # Local coordinates of the 5 points forming the classic parallel-jaw gripper frame shape
 local_nodes = np.array([
     [0.0, 0.0, 0.0],  # 0: Base
@@ -90,7 +97,7 @@ local_nodes = np.array([
     [gripper_width / 2, 0.0, gripper_depth + jaw_depth]  # 4: Right jaw tip
 ], dtype=np.float32)
 
-# 3. Transform local gripper frames into the 3D Camera Scene
+# Transform local gripper frames into the 3D Camera Scene
 all_points = []
 points_per_line = []
 gripper_scores = []
@@ -115,12 +122,12 @@ all_points = np.array(all_points, dtype=np.float32)
 points_per_line = np.array(points_per_line, dtype=np.int32)
 gripper_scores = np.array(gripper_scores, dtype=np.float32)
 
-# 4. Separate X, Y, Z for pyevtk formatting
+# Separate X, Y, Z for pyevtk formatting
 lx = np.ascontiguousarray(all_points[:, 0])
 ly = np.ascontiguousarray(all_points[:, 1])
 lz = np.ascontiguousarray(all_points[:, 2])
 
-# 5. Export the explicit gripper wireframes to VTK PolyData
+# Export the explicit gripper wireframes to VTK PolyData
 # FIXED: Using cellData instead of lineData to attach variables to lines
 polyLinesToVTK("./contact_graspnet_grippers", lx, ly, lz,
                pointsPerLine=points_per_line,
