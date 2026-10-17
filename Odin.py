@@ -28,15 +28,12 @@ cam.capture_image()
 depth = cam.get_depth()
 rgb = cam.get_color()
 cam_K = cam.get_k()
-point_cloud = cam.get_pointcloud()
-
-print(f"Generated 3D Point Cloud shape: {point_cloud.shape}")
+point_cloud = cam.get_pointcloud(MIN_DEPTH, MAX_DEPTH)
 
 # Save as .npz with all keys expected by data.py (prevents UnboundLocalError)
 np.savez(
     output_path,
-    xyz=point_cloud,      # Core point cloud key
-    pc_full=point_cloud,  # Fallback point cloud key
+    depth = depth,        # Depth map from camera
     K=cam_K,              # Standard camera matrix key
     rgb=rgb,              # normal rgb image
 )
@@ -47,9 +44,14 @@ print(f"Successfully saved to {output_path}")
 # Model Inference
 # Run Contact Graspnet
 #================================================================
-subprocess.run(['python', 'contact_graspnet/contact_graspnet/inference.py', f'--np_path=../{output_path}',
-               '--ckpt_dir=checkpoints/scene_test_2048_bs3_hor_sigma_0025', '--forward_passes=5',
-                f'--z_range=[{MIN_DEPTH},{MAX_DEPTH}]', '--no_visualize'])
+try:
+    print("\nRunning Contact-GraspNet Inference...")
+    subprocess.run(['python', 'contact_graspnet/contact_graspnet/inference.py', f'--np_path=../{output_path}',
+                   '--ckpt_dir=checkpoints/scene_test_2048_bs3_hor_sigma_0025', '--forward_passes=5',
+                    f'--z_range=[{MIN_DEPTH},{MAX_DEPTH}]', '--no_visualize'])
+    print("Successfully ran Contact-GraspNet Inference and saved output")
+except Exception as e:
+    print("\nERROR:", e)
 
 #================================================================
 # Post Processing
