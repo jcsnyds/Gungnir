@@ -316,7 +316,7 @@ class L515:
         return self.color_image
 
     def get_pointcloud(self) -> np.ndarray:
-        h, w = self.depth.shape
+        h, w = self.depth_image.shape
 
         # Define Camera Intrinsics Matrix K
         #     [fx,  0.0, cx],
@@ -332,9 +332,9 @@ class L515:
         u, v = np.meshgrid(np.arange(w), np.arange(h))
 
         # Filter valid depth points (in meters)
-        valid = (self.depth > MIN_DEPTH) & (self.depth < MAX_DEPTH)
+        valid = (self.depth_image > MIN_DEPTH) & (self.depth_image < MAX_DEPTH)
 
-        z = self.depth[valid]
+        z = self.depth_image[valid]
         x = (u[valid] - cx) * z / fx
         y = (v[valid] - cy) * z / fy
 
