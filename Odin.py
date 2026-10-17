@@ -1,4 +1,6 @@
 import subprocess
+import os
+import sys
 import numpy as np
 from pyevtk.hl import polyLinesToVTK, pointsToVTK
 from l515 import L515
@@ -15,6 +17,7 @@ gripper_width = 0.08
 jaw_depth = 0.04
 
 output_path = "input_pc.npz"
+results_file = "contact_graspnet/results/predictions_input_pc.npz"
 
 #================================================================
 # Preprocessing
@@ -44,15 +47,22 @@ print(f"Successfully saved to {output_path}")
 # Model Inference
 # Run Contact Graspnet
 #================================================================
+if os.path.exists(results_file):
+    os.remove(results_file)   # never post-process a result left over from an earlier run
+
 try:
     print("\nRunning Contact-GraspNet Inference...")
-    subprocess.run(['python', 'contact_graspnet/contact_graspnet/inference.py', f'--np_path={output_path}',
-                   '--ckpt_dir=contact_graspnet/checkpoints/scene_test_2048_bs3_hor_sigma_0025', '--forward_passes=5',
-                    f'--z_range=[{MIN_DEPTH},{MAX_DEPTH}]'])
+    subprocess.run(
+        [sys.executable, 'contact_graspnet/contact_graspnet/inference.py', f'--np_path={output_path}',
+         '--ckpt_dir=contact_graspnet/checkpoints/scene_test_2048_bs3_hor_sigma_0025',
+         '--forward_passes=5', f'--z_range=[{MIN_DEPTH},{MAX_DEPTH}]'],
+        check=True,
+        env={**os.environ, "TF_USE_LEGACY_KERAS": "1"},
+    )
     print("Successfully ran Contact-GraspNet Inference and saved output")
-except Exception as e:
-    print("\nERROR:", e)
-    exit(1)
+except subprocess.CalledProcessError as e:
+    print(f"\nERROR: inference exited with code {e.returncode}")
+    sys.exit(1)
 
 #================================================================
 # Post Processing
