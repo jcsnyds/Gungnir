@@ -26,3 +26,5 @@ tensorflow; sys_platform != "linux"
 # CPU-only, so use a community-built GPU wheel. Unofficial: skim the repo before use.
 # https://github.com/RitishKam/tensorflow-jetson-jp7
 tensorflow-jetson-jp7 @ https://github.com/RitishKam/tensorflow-jetson-jp7/releases/download/v2.21.0-jp7.2/tensorflow_jetson_jp7-2.21.0+jp7.2.cu12-cp312-cp312-manylinux_2_27_aarch64.whl ; sys_platform == "linux" and platform_machine == "aarch64"
+
+opencv-python
