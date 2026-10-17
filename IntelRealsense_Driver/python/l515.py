@@ -313,7 +313,7 @@ class L515:
         """Return the most recently captured BGR color image."""
         if self.color_image is None:
             raise L515Error("No color image has been captured yet.")
-        return self.color_image
+        return self.color_image[..., ::-1]
 
     def get_pointcloud(self, MIN_DEPTH, MAX_DEPTH) -> np.ndarray:
         h, w = self.depth_image.shape
@@ -343,7 +343,7 @@ class L515:
 
     def get_RGBD(self) -> np.ndarray:
         """Return the most recently captured RGBD image in meters."""
-        rgbd = np.dstack((self.color_image, self.depth_image))
+        rgbd = np.dstack((self.color_image[..., ::-1], self.depth_image))
         return rgbd
 
     def get_k(self) -> np.ndarray:
@@ -396,7 +396,7 @@ class L515:
         self.show_image()
 
     def save_RGB(self):
-        np.save("rgb.npy", self.color_image)
+        np.save("rgb.npy", self.color_image[..., ::-1])
 
     def save_depth(self):
         np.save("depth.npy", self.depth_image)
