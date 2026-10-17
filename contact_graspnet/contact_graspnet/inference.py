@@ -5,7 +5,7 @@ import numpy as np
 import time
 import glob
 import cv2
-
+os.environ.setdefault("TF_USE_LEGACY_KERAS", "1")  # must run before TensorFlow is imported
 import tensorflow.compat.v1 as tf
 tf.disable_eager_execution()
 physical_devices = tf.config.experimental.list_physical_devices('GPU')
