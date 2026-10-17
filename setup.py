@@ -25,8 +25,8 @@ REALSENSE_SETUP = ROOT / "IntelRealsense_Driver" / "setup.py"
 REQUIREMENTS = ROOT / "requirements.txt"
 CONSTRAINTS = ROOT / "constraints.txt"
 
-# CUDA 13.2 PyTorch builds. On JetPack 7.2 a plain `pip install torch` can give a wheel
-# without sm_87 (Orin) kernels, so Jetson installs come from this index and are verified.
+# CUDA 13.2 PyTorch builds. On JetPack 7.2 a plain `pip install torch` can give a build that
+# does not run on Orin, so Jetson installs come from this index and are verified by running a kernel.
 TORCH_INDEX = "https://download.pytorch.org/whl/cu132"
 
 AARCH64_LINUX = platform.system() == "Linux" and platform.machine() == "aarch64"
@@ -56,11 +56,6 @@ y = (x @ x).sum().item()
 print('GPU matmul sum =', y)
 sys.exit(0 if math.isfinite(y) else 1)
 """
-
-TORCH_HAS_SM87 = (
-    "import sys, torch; "
-    "sys.exit(0 if 'sm_87' in torch.cuda.get_arch_list() else 1)"
-)
 
 
 def log(message: str) -> None:
@@ -110,12 +105,18 @@ def warn_if_system_site_packages() -> None:
         )
 
 
-def torch_has_sm87() -> bool:
-    return subprocess.run([PY, "-c", TORCH_HAS_SM87], stderr=subprocess.DEVNULL).returncode == 0
+def torch_gpu_ok() -> bool:
+    """True if PyTorch imports and runs a finite matmul on the GPU.
+
+    Deliberately not an arch-list check: a wheel built for sm_80 runs on Orin (sm_87), because
+    cubins are compatible within the same major architecture.
+    """
+    result = subprocess.run([PY, "-c", TORCH_CHECK], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    return result.returncode == 0
 
 
 def prepare_jetson() -> None:
-    """Jetson Orin: replace CPU-only TensorFlow and make sure PyTorch has Orin (sm_87) kernels."""
+    """Jetson Orin: replace CPU-only TensorFlow and make sure PyTorch runs on the GPU."""
     log("Preparing Jetson Orin (aarch64 Linux)")
     try:
         model = Path("/proc/device-tree/model").read_bytes().decode(errors="ignore")
@@ -138,12 +139,12 @@ def prepare_jetson() -> None:
         log("Removing the CPU-only PyPI TensorFlow")
         pip("uninstall", "-y", "tensorflow")
 
-    if not torch_has_sm87():
+    if not torch_gpu_ok():
         log("Installing CUDA 13.2 PyTorch")
         pip("install", "torch", "torchvision", "--extra-index-url", TORCH_INDEX)
-        if not torch_has_sm87():
+        if not torch_gpu_ok():
             # PyPI can win over the extra index; force the CUDA build without touching its dependencies.
-            log("PyTorch still lacks sm_87 kernels; forcing the build from the CUDA 13.2 index")
+            log("PyTorch still does not run on the GPU; forcing the build from the CUDA 13.2 index")
             pip("install", "--force-reinstall", "--no-deps", "torch", "torchvision", "--index-url", TORCH_INDEX)
 
 
@@ -165,9 +166,8 @@ def verify() -> int:
             "\nA GPU check failed on this Jetson. Things to look at:\n"
             "  - TensorFlow: the community wheel is unofficial; see the repo's issues, or fall back to the\n"
             "    PyTorch port of Contact-GraspNet.\n"
-            "  - PyTorch: 'sm_87' must appear in the compiled arch list above, and the matmul sum must be\n"
-            "    finite (not nan). If not, try a prebuilt Orin wheel for CUDA 13.2 (see the Jetson-Orin-Wheels\n"
-            "    GitHub releases)."
+            "  - PyTorch: the GPU matmul must run and print a finite sum (not nan). If it errors or prints nan,\n"
+            "    try a prebuilt Orin wheel for CUDA 13.2 (see the Jetson-Orin-Wheels GitHub releases)."
         )
         return 1
     print("\nGPU checks failed. That is expected if this machine has no NVIDIA GPU.")

@@ -315,6 +315,35 @@ class L515:
             raise L515Error("No color image has been captured yet.")
         return self.color_image
 
+    def get_pointcloud(self) -> np.ndarray:
+        # Define Camera Intrinsics Matrix K
+        #     [fx,  0.0, cx],
+        #     [0.0, fy,  cy],
+        #     [0.0, 0.0, 1.0]
+        cam_K = self.get_k()
+        fx = cam_K[0, 0]
+        fy = cam_K[1, 1]
+        cx = cam_K[0, 2]
+        cy = cam_K[1, 2]
+
+        # Project 2D Depth map to 3D Point Cloud (X, Y, Z) in meters
+        u, v = np.meshgrid(np.arange(w), np.arange(h))
+
+        # Filter valid depth points (in meters)
+        valid = (self.depth > MIN_DEPTH) & (self.depth < MAX_DEPTH)
+
+        z = self.depth[valid]
+        x = (u[valid] - cx) * z / fx
+        y = (v[valid] - cy) * z / fy
+
+        point_cloud = np.stack((x, y, z), axis=-1).astype(np.float32)
+        return point_cloud
+
+    def get_RGBD(self) -> np.ndarray:
+        """Return the most recently captured RGBD image in meters."""
+        rgbd = np.dstack((self.color_image, self.depth_image))
+        return rgbd
+
     def get_k(self) -> np.ndarray:
         """Return the color intrinsic matrix K used by depth aligned to color."""
         if self._windows_backend is not None:
@@ -371,8 +400,12 @@ class L515:
         np.save("depth.npy", self.depth_image)
 
     def save_RGBD(self):
-        rgbd = np.dstack((self.color_image, self.depth_image))
+        rgbd = self.get_RGBD()
         np.save("rgbd.npy", rgbd)
+
+    def save_pointcloud(self):
+        pointcloud = self.get_pointcloud()
+        np.save("pointcloud.npy", point_cloud)
 
     def close(self) -> None:
         """Stop streaming and release the native camera handle."""
