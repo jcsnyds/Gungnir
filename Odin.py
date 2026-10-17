@@ -53,11 +53,11 @@ if os.path.exists(results_file):
 try:
     print("\nRunning Contact-GraspNet Inference...")
     subprocess.run(
-        ['CUDA_LAUNCH_BLOCKING=1', 'python', 'contact_graspnet/contact_graspnet/inference.py', f'--np_path={output_path}',
+        ['python', 'contact_graspnet/contact_graspnet/inference.py', f'--np_path={output_path}',
          '--ckpt_dir=contact_graspnet/checkpoints/scene_test_2048_bs3_hor_sigma_0025',
          '--forward_passes=5', f'--z_range=[{MIN_DEPTH},{MAX_DEPTH}]'],
         check=True,
-        env={**os.environ, "TF_USE_LEGACY_KERAS": "1"},
+        env={**os.environ, "TF_USE_LEGACY_KERAS": "1", 'CUDA_LAUNCH_BLOCKING1': '1'},
     )
     print("Successfully ran Contact-GraspNet Inference and saved output")
 except subprocess.CalledProcessError as e:
