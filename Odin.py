@@ -27,7 +27,8 @@ cam = L515()
 cam.capture_image()
 depth = cam.get_depth()
 rgb = cam.get_color()
-h, w = depth.shape
+cam_K = cam.get_k()
+point_cloud = cam.get_pointcloud()
 
 print(f"Generated 3D Point Cloud shape: {point_cloud.shape}")
 

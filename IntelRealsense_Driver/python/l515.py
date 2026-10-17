@@ -316,6 +316,8 @@ class L515:
         return self.color_image
 
     def get_pointcloud(self) -> np.ndarray:
+        h, w = self.depth.shape
+
         # Define Camera Intrinsics Matrix K
         #     [fx,  0.0, cx],
         #     [0.0, fy,  cy],
