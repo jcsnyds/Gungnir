@@ -237,6 +237,7 @@ def build_contact_graspnet_tfops() -> None:
     def compile_op(directory: Path, name: str) -> None:
         """Compile a CUDA kernel and its TensorFlow wrapper."""
         log(f"Compiling {name}")
+
         kernel = f"tf_{name}_g.cu"
         obj = f"tf_{name}_g.cu.o"
         wrapper = f"tf_{name}.cpp"
@@ -258,6 +259,8 @@ def build_contact_graspnet_tfops() -> None:
             "-shared",
             "-fPIC",
             *common_flags,
+            f"-I{cuda_home / 'targets' / 'sbsa-linux' / 'include'}",
+            f"-I{cuda_home / 'include'}",
             wrapper,
             obj,
             "-o", output,
@@ -271,17 +274,15 @@ def build_contact_graspnet_tfops() -> None:
     # This operator registers CPU kernels; it does not need nvcc.
     interpolation = ops_root / "3d_interpolation"
     log("Compiling interpolation operator")
+
     run([
         "g++",
-        "-std=c++17",
         "-shared",
         "-fPIC",
-        "-O2",
-        *tf_cflags,
+        *common_flags,
         "tf_interpolate.cpp",
         "-o", "tf_interpolate_so.so",
         *tf_lflags,
-        f"-Wl,-rpath,{tf_lib}",
     ], cwd=interpolation, env=env)
 
     # Confirm that all three rebuilt libraries are ARM64 ELF binaries.
