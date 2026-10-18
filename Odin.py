@@ -10,6 +10,8 @@ import tensorflow as tf
 # Constants
 #=================================================================
 
+USE_CAMERA = False
+
 MIN_DEPTH = 0.1
 MAX_DEPTH = 2.5
 
@@ -28,23 +30,26 @@ results_file = "output/model_predictions.npz"
 #================================================================
 
 #Capture image and get Depth Map
-print('\nCapturing Image\n')
-cam = L515()
-cam.capture_image()
-depth = cam.get_depth()
-rgb = cam.get_color()
-cam_K = cam.get_k()
-point_cloud = cam.get_pointcloud(MIN_DEPTH, MAX_DEPTH)
+if USE_CAMERA:
+    print('\nCapturing Image\n')
+    cam = L515()
+    cam.capture_image()
+    depth = cam.get_depth()
+    rgb = cam.get_color()
+    cam_K = cam.get_k()
+    point_cloud = cam.get_pointcloud(MIN_DEPTH, MAX_DEPTH)
 
-# Save as .npz with all keys expected by data.py (prevents UnboundLocalError)
-np.savez(
-    output_path,
-    depth = depth,        # Depth map from camera
-    K=cam_K,              # Standard camera matrix key
-    rgb=rgb,              # normal rgb image
-)
+    # Save as .npz with all keys expected by data.py (prevents UnboundLocalError)
+    np.savez(
+        output_path,
+        depth = depth,        # Depth map from camera
+        K=cam_K,              # Standard camera matrix key
+        rgb=rgb,              # normal rgb image
+    )
 
-print(f"Successfully saved to {output_path}")
+    print(f"Successfully saved to {output_path}")
+else:
+    print(f"Using last file saved to {output_path}")
 
 #================================================================
 # Model Inference

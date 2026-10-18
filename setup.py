@@ -1,12 +1,19 @@
 #!/usr/bin/env python3
-"""Project installer: RealSense L515 wrapper + Python dependencies, with GPU TensorFlow
-and PyTorch on Jetson Orin (JetPack 7.2, CUDA 13.2, Python 3.12).
+"""Cross-platform project installer for Contact-GraspNet and the L515 wrapper.
 
-Run from the already-active virtual environment:
+Run inside the project's virtual environment:
 
-    python setup.py                      # everything
-    python setup.py --skip-realsense     # Python dependencies only
-    python setup.py --skip-system-deps   # unknown flags are forwarded to IntelRealsense_Driver/setup.py
+    python setup.py                      # install dependencies, setup RealSense, then verify
+    python setup.py --skip-realsense     # dependencies and verification only
+    python setup.py --skip-verify        # install without final smoke tests
+    python setup.py --skip-tf-ops        # skip Jetson-only TensorFlow CUDA-op compilation
+
+Optional platform-specific dependency files are supported:
+    requirements-windows.txt / constraints-windows.txt
+    requirements-linux.txt   / constraints-linux.txt
+If absent, requirements.txt is used. Jetson-specific TensorFlow/CUDA wheels should not be
+listed in a Windows requirements file. Native L515 compilation also requires the driver's
+IntelRealsense_Driver/setup.py to support the current operating system and compiler.
 """
 
 from __future__ import annotations
@@ -26,12 +33,15 @@ PY = sys.executable  # always the venv's interpreter, never whatever `python` re
 REALSENSE_SETUP = ROOT / "IntelRealsense_Driver" / "setup.py"
 REQUIREMENTS = ROOT / "requirements.txt"
 CONSTRAINTS = ROOT / "constraints.txt"
+SYSTEM = platform.system()
+IS_WINDOWS = SYSTEM == "Windows"
+IS_LINUX = SYSTEM == "Linux"
 
 # CUDA 13.2 PyTorch builds. On JetPack 7.2 a plain `pip install torch` can give a build that
 # does not run on Orin, so Jetson installs come from this index and are verified by running a kernel.
 TORCH_INDEX = "https://download.pytorch.org/whl/cu132"
 
-AARCH64_LINUX = platform.system() == "Linux" and platform.machine() == "aarch64"
+AARCH64_LINUX = IS_LINUX and platform.machine().lower() in ("aarch64", "arm64")
 
 TF_CHECK = """
 import math, sys
@@ -94,13 +104,39 @@ def is_installed(distribution: str) -> bool:
 
 def require_venv() -> None:
     if sys.prefix == sys.base_prefix and not os.environ.get("CONDA_PREFIX"):
+        if IS_WINDOWS:
+            activate = r".venv\Scripts\Activate.ps1  (PowerShell)"
+        else:
+            activate = "source .venv/bin/activate"
         sys.exit(
             "No virtual environment is active. Activate yours first, e.g.\n"
-            "    source /home/edgeai5/ME5990/edgeai/bin/activate\n"
+            f"    {activate}\n"
             f"Current interpreter: {PY}"
         )
-    if not CONSTRAINTS.is_file():
-        sys.exit(f"Missing {CONSTRAINTS}")
+
+
+def platform_dependency_files() -> tuple[Path, Path | None]:
+    """Choose platform-specific requirements/constraints when supplied."""
+    suffix = "windows" if IS_WINDOWS else "linux" if IS_LINUX else platform.system().lower()
+    platform_requirements = ROOT / f"requirements-{suffix}.txt"
+    platform_constraints = ROOT / f"constraints-{suffix}.txt"
+    requirements = platform_requirements if platform_requirements.is_file() else REQUIREMENTS
+    constraints = platform_constraints if platform_constraints.is_file() else CONSTRAINTS
+
+    if not requirements.is_file():
+        sys.exit(f"Missing requirements file: {requirements}")
+    if IS_WINDOWS and requirements == REQUIREMENTS:
+        print(
+            "\nWARNING: requirements-windows.txt was not found, so requirements.txt will be used.\n"
+            "If requirements.txt contains Jetson/Linux-only wheels or packages, create a separate\n"
+            "requirements-windows.txt for Windows (recommended)."
+        )
+    # Do not force Linux/Jetson constraints onto Windows.
+    if IS_WINDOWS and constraints == CONSTRAINTS and not (ROOT / "constraints-windows.txt").is_file():
+        constraints = None
+    elif not constraints.is_file():
+        constraints = None
+    return requirements, constraints
 
 
 def warn_if_system_site_packages() -> None:
@@ -214,7 +250,7 @@ def build_contact_graspnet_tfops() -> None:
 
     env = os.environ.copy()
     env["CUDA_HOME"] = str(cuda_home)
-    env["PATH"] = f"{cuda_home / 'bin'}:{env.get('PATH', '')}"
+    env["PATH"] = f"{cuda_home / 'bin'}{os.pathsep}{env.get('PATH', '')}"
     env["TF_USE_LEGACY_KERAS"] = "1"
     env["LD_LIBRARY_PATH"] = ":".join(
         p for p in (
@@ -333,64 +369,109 @@ def check(label: str, code: str, env: dict | None = None) -> bool:
 
 
 def verify() -> int:
-    tf_ok = check("TensorFlow on GPU", TF_CHECK)
-    torch_ok = check("PyTorch on GPU", TORCH_CHECK)
     if AARCH64_LINUX:
+        tf_ok = check("TensorFlow on GPU", TF_CHECK)
+        torch_ok = check("PyTorch on GPU", TORCH_CHECK)
         legacy_env = {**os.environ, "TF_USE_LEGACY_KERAS": "1"}
         legacy_ok = check("tf.compat.v1.layers (needs TF_USE_LEGACY_KERAS=1)", TF_LEGACY_LAYERS_CHECK, env=legacy_env)
-        tf_ok = tf_ok and legacy_ok
-    if tf_ok and torch_ok:
-        log("All GPU checks passed")
-        if AARCH64_LINUX:
-            print("    Reminder: export TF_USE_LEGACY_KERAS=1 (or set it at the top of inference.py) before running Contact-GraspNet.")
-        return 0
-    if AARCH64_LINUX:
+        if tf_ok and torch_ok and legacy_ok:
+            log("All Jetson GPU checks passed")
+            print("    Reminder: set TF_USE_LEGACY_KERAS=1 before running Contact-GraspNet inference.")
+            return 0
         print(
-            "\nA GPU check failed on this Jetson. Things to look at:\n"
-            "  - TensorFlow: the community wheel is unofficial; see the repo's issues, or fall back to the\n"
-            "    PyTorch port of Contact-GraspNet.\n"
-            "  - PyTorch: the GPU matmul must run and print a finite sum (not nan). If it errors or prints nan,\n"
-            "    try a prebuilt Orin wheel for CUDA 13.2 (see the Jetson-Orin-Wheels GitHub releases)."
+            "\nA Jetson GPU check failed. Confirm that the installed TensorFlow and PyTorch builds "
+            "match the JetPack/CUDA environment."
         )
         return 1
-    print("\nGPU checks failed. That is expected if this machine has no NVIDIA GPU.")
-    return 0
+
+    # Windows and general-purpose PCs may be CPU-only. Test imports and CPU execution first;
+    # if a CUDA GPU is available, test it as an additional check without requiring one.
+    tf_cpu_check = """
+import math, tensorflow as tf
+x = tf.random.normal([128, 128])
+y = float(tf.reduce_sum(x @ x))
+print('TensorFlow', tf.__version__, '| CPU matmul sum =', y)
+assert math.isfinite(y)
+"""
+    torch_cpu_check = """
+import math, torch
+x = torch.randn(128, 128)
+y = (x @ x).sum().item()
+print('PyTorch', torch.__version__, '| CPU matmul sum =', y, '| CUDA available:', torch.cuda.is_available())
+assert math.isfinite(y)
+if torch.cuda.is_available():
+    z = (torch.randn(128, 128, device='cuda') @ torch.randn(128, 128, device='cuda')).sum().item()
+    print('PyTorch GPU matmul sum =', z)
+    assert math.isfinite(z)
+"""
+    tf_ok = check("TensorFlow import/CPU operation", tf_cpu_check)
+    torch_ok = check("PyTorch import/CPU operation (GPU tested if available)", torch_cpu_check)
+    if tf_ok and torch_ok:
+        log("Python framework checks passed")
+        if IS_WINDOWS:
+            print(
+                "    Note: standard native Windows TensorFlow installs are generally CPU-only. "
+                "For NVIDIA GPU TensorFlow, use a supported WSL2/Linux setup."
+            )
+        return 0
+    print("\nOne or more Python framework checks failed. Review the errors above.")
+    return 1
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--skip-realsense", action="store_true", help="Skip the RealSense L515 setup.")
-    parser.add_argument("--skip-verify", action="store_true", help="Skip the GPU checks at the end.")
-    parser.add_argument(
-        "--skip-tf-ops",
-        action="store_true",
-        help="Skip building Contact-GraspNet TensorFlow custom operators.",
+    parser = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
+    parser.add_argument("--skip-realsense", action="store_true", help="Skip the RealSense L515 native-wrapper setup.")
+    parser.add_argument("--skip-verify", action="store_true", help="Skip final smoke tests.")
+    parser.add_argument("--skip-tf-ops", action="store_true", help="Skip building Contact-GraspNet TensorFlow custom operators (Jetson only).")
     args, realsense_args = parser.parse_known_args()
 
     require_venv()
     warn_if_system_site_packages()
-    # Inherited by every pip call below, including the ones inside the RealSense setup.py.
-    os.environ["PIP_CONSTRAINT"] = str(CONSTRAINTS)
+    requirements, constraints = platform_dependency_files()
+
+    # PIP_CONSTRAINT is inherited by child setup scripts. Use platform-matched constraints only.
+    if constraints is not None:
+        os.environ["PIP_CONSTRAINT"] = str(constraints)
+    else:
+        os.environ.pop("PIP_CONSTRAINT", None)
 
     if not args.skip_realsense:
-        log("RealSense L515 wrapper")
-        run([PY, REALSENSE_SETUP, *realsense_args])
+        if not REALSENSE_SETUP.is_file():
+            sys.exit(f"RealSense setup script not found: {REALSENSE_SETUP}")
+        log(f"RealSense L515 wrapper setup ({SYSTEM})")
+        try:
+            run([PY, REALSENSE_SETUP, *realsense_args])
+        except subprocess.CalledProcessError as exc:
+            if IS_WINDOWS:
+                sys.exit(
+                    "The RealSense wrapper setup failed on Windows. Its native backend must be "
+                    "built as a Windows DLL with a supported Windows compiler. If you only need "
+                    "Contact-GraspNet on Windows, rerun with --skip-realsense.\n"
+                    f"Underlying exit code: {exc.returncode}"
+                )
+            raise
 
     if AARCH64_LINUX:
         prepare_jetson()
 
-    log("Installing requirements.txt")
-    pip("install", "-r", REQUIREMENTS)
+    log(f"Installing Python dependencies from {requirements.name}")
+    pip("install", "-r", requirements)
 
     if AARCH64_LINUX:
-        # tf-keras lists `tensorflow` as a dependency; without --no-deps pip would install PyPI's
-        # CPU-only TensorFlow on top of the Jetson wheel. Pinned to the 2.21 line to match the wheel.
+        # tf-keras otherwise attempts to install PyPI TensorFlow over the Jetson-specific wheel.
         log("Installing legacy Keras (tf-keras) for tf.compat.v1.layers")
         pip("install", "--no-deps", "tf-keras>=2.21,<2.22")
-
-    if AARCH64_LINUX and not args.skip_tf_ops:
-        build_contact_graspnet_tfops()
+        if not args.skip_tf_ops:
+            build_contact_graspnet_tfops()
+    elif IS_WINDOWS:
+        log("Skipping Jetson-only TensorFlow CUDA-op compilation on Windows")
+        print(
+            "Windows note: this installer does not compile the Contact-GraspNet PointNet2 .so ops. "
+            "Those are Linux shared objects; Windows would need a separate native Windows/CUDA "
+            "implementation or a WSL2/Linux environment."
+        )
 
     return 0 if args.skip_verify else verify()
 
