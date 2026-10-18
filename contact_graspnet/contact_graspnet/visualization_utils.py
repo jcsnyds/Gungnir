@@ -139,6 +139,7 @@ def draw_grasps(
             ))
 
 
+
 def visualize_grasps(
     full_pc,
     pred_grasps_cam,
@@ -148,24 +149,34 @@ def visualize_grasps(
     gripper_openings=None,
     gripper_width=0.08,
 ):
-    """Visualize the scene and predicted grasp poses in Plotly."""
+    """Visualize grasps, highlighting the highest-scoring predictions."""
     print("Generating grasp visualization...")
 
     fig = go.Figure()
-
     draw_pc_with_colors(full_pc, fig, pc_colors)
-
-    colors = px.colors.sample_colorscale(
-        "Rainbow",
-        np.linspace(0, 1, max(len(pred_grasps_cam), 2)),
-    )
 
     if plot_opencv_cam:
         plot_coordinates(np.zeros(3), np.eye(3), fig)
 
-    for i, k in enumerate(pred_grasps_cam):
-        grasps = pred_grasps_cam[k]
+    # Collect valid scores to establish thresholds across all grasps.
+    all_scores = []
+    for k, grasps in pred_grasps_cam.items():
+        if grasps is None or len(grasps) == 0:
+            continue
 
+        if scores is not None and k in scores:
+            grasp_scores = np.asarray(scores[k]).reshape(-1)
+            all_scores.extend(
+                grasp_scores[np.isfinite(grasp_scores)].tolist()
+            )
+
+    if all_scores:
+        score_70 = np.percentile(all_scores, 70)
+        score_90 = np.percentile(all_scores, 90)
+    else:
+        score_70 = score_90 = None
+
+    for k, grasps in pred_grasps_cam.items():
         if grasps is None or len(grasps) == 0:
             continue
 
@@ -175,16 +186,38 @@ def visualize_grasps(
             else gripper_openings[k]
         )
 
+        grasp_colors = []
+
+        grasp_scores = (
+            np.asarray(scores[k]).reshape(-1)
+            if scores is not None and k in scores
+            else np.array([])
+        )
+
+        for i in range(len(grasps)):
+            if i >= len(grasp_scores) or not np.isfinite(grasp_scores[i]):
+                grasp_colors.append("gray")
+                continue
+
+            score = grasp_scores[i]
+
+            if score_90 is not None and score >= score_90:
+                grasp_colors.append("gold")
+            elif score_70 is not None and score >= score_70:
+                grasp_colors.append("limegreen")
+            else:
+                grasp_colors.append("rgba(130,130,130,0.35)")
+
         draw_grasps(
             grasps,
             np.eye(4),
             openings,
             fig,
-            color=colors[i % len(colors)],
+            colors=grasp_colors,
         )
 
     fig.update_layout(
-        title="Contact-GraspNet Predicted Grasps",
+        title="Contact-GraspNet Predicted Grasps (Gold = Top 10%, Green = Top 30%)",
         scene=dict(
             xaxis_title="X (m)",
             yaxis_title="Y (m)",
@@ -195,5 +228,4 @@ def visualize_grasps(
 
     output_file = "output/contact_graspnet_grasps.html"
     fig.write_html(output_file, auto_open=False)
-
-    print(f"Saved visualization to {output_file}")
+    print(f"Saved grasp visualization to {output_file}")
