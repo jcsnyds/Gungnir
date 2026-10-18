@@ -13,6 +13,8 @@ import tensorflow as tf
 MIN_DEPTH = 0.1
 MAX_DEPTH = 2.5
 
+INFERENCE_PASSES = 5
+
 gripper_depth = 0.06
 gripper_width = 0.08
 jaw_depth = 0.04
@@ -70,7 +72,7 @@ try:
             "contact_graspnet/contact_graspnet/inference.py",
             f"--np_path={output_path}",
             "--ckpt_dir=contact_graspnet/checkpoints/scene_test_2048_bs3_hor_sigma_0025",
-            "--forward_passes=1",
+            f"--forward_passes={INFERENCE_PASSES}",
             f"--z_range=[{MIN_DEPTH},{MAX_DEPTH}]",
         ],
         check=True,

@@ -24,7 +24,7 @@ def show_image(rgb, segmap):
         ))
 
     fig.update_layout(title="RGB Image and Segmentation")
-    fig.write_html("contact_graspnet_image.html")
+    fig.write_html("output/contact_graspnet_image.html")
 
 
 def plot_coordinates(t, r, fig, length=0.2):
@@ -193,7 +193,7 @@ def visualize_grasps(
         ),
     )
 
-    output_file = "contact_graspnet_grasps.html"
+    output_file = "output/contact_graspnet_grasps.html"
     fig.write_html(output_file, auto_open=False)
 
     print(f"Saved visualization to {output_file}")
