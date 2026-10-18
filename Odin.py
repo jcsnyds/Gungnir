@@ -20,7 +20,7 @@ gripper_width = 0.08
 jaw_depth = 0.04
 
 output_path = "input_pc.npz"
-results_file = "contact_graspnet/results/predictions_input_pc.npz"
+results_file = "output/model_predictions.npz"
 
 #================================================================
 # Preprocessing
