@@ -13,7 +13,7 @@ import tensorflow as tf
 MIN_DEPTH = 0.1
 MAX_DEPTH = 2.5
 
-INFERENCE_PASSES = 5
+INFERENCE_PASSES = 3
 
 gripper_depth = 0.06
 gripper_width = 0.08
