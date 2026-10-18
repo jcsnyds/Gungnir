@@ -90,7 +90,7 @@ except subprocess.CalledProcessError as e:
 #================================================================
 
 # Load your compressed arrays
-data = np.load("contact_graspnet/results/predictions_input_pc.npz", allow_pickle=True)
+data = np.load(f"{output_path}", allow_pickle=True)
 print("Your actual keys are:", data.files)
 
 contact_pts = np.array(data['contact_pts'].item()[-1], dtype=np.float32)
