@@ -1,3 +1,7 @@
+// AI use: Modified by a command/script written by Claude (Anthropic; Claude Sonnet 5.5 via
+// claude.ai), October 2026: Status::OK() replaced with absl::OkStatus() for TensorFlow 2.21
+// (original saved as *.orig). No other changes.
+
 #include <cstdio>
 #include <ctime>
 #include <cstring> // memset

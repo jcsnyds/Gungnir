@@ -14,6 +14,13 @@ Optional platform-specific dependency files are supported:
 If absent, requirements.txt is used. Jetson-specific TensorFlow/CUDA wheels should not be
 listed in a Windows requirements file. Native L515 compilation also requires the driver's
 IntelRealsense_Driver/setup.py to support the current operating system and compiler.
+
+AI use: Originally written by Claude (Anthropic; Claude Sonnet 5.5 via claude.ai), October 2026,
+as install.py: venv-aware installer, Jetson GPU TensorFlow/PyTorch handling, tf-keras install and
+GPU checks. Claude checked only its syntax. Later edited by the author; parts such as
+build_contact_graspnet_tfops() were not written by Claude in this conversation, so disclose
+their source separately.
+Reviewed and tested by: Ryan Poliquin
 """
 
 from __future__ import annotations

@@ -1,4 +1,8 @@
 # Exported as PIP_CONSTRAINT by install.py, so every pip call (the RealSense setup.py,
 # the torch install, requirements.txt) uses the same NumPy range.
 # The <2.6 cap exists only because cupy-cuda13x 14.2 requires numpy<2.6; drop it if you don't use cupy.
+
+# AI use: Written by Claude (Anthropic; Claude Sonnet 5.5 via claude.ai), October 2026
+# (NumPy version range shared by all pip calls).
+
 numpy>=2,<2.6

@@ -6,6 +6,12 @@
 # scipy 1.11, pandas 2.1, matplotlib 3.6). If the venv can see system site-packages,
 # pip would otherwise treat those old builds as "already satisfied" and never install
 # NumPy 2-compatible copies into the venv.
+
+# AI use: Written by Claude (Anthropic; Claude Sonnet 5.5 via claude.ai), October 2026: platform
+# markers that select the Jetson GPU TensorFlow wheel, and version floors that keep pip from
+# accepting the system's old packages.
+# Reviewed and tested by: Ryan Poliquin
+
 numpy>=2
 scipy>=1.14
 pandas>=2.2

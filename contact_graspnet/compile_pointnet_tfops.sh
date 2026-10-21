@@ -1,3 +1,8 @@
+# AI use: Written by Claude (Anthropic; Claude Sonnet 5.5 via claude.ai), October 2026. Builds the
+# pointnet2 TensorFlow custom ops for Jetson Orin and rewrites Status::OK() to absl::OkStatus() in
+# their .cpp sources. Claude tested it only with stub compilers.
+# Reviewed and tested by: Ryan Poliquin
+
 CUDA_INCLUDE=' -I/usr/local/cuda/include/'
 CUDA_LIB=' -L/usr/local/cuda/lib64/'
 TF_CFLAGS=$(python3 -c 'import tensorflow as tf; print(" ".join(tf.sysconfig.get_compile_flags()))')

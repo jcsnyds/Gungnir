@@ -1,3 +1,6 @@
+# AI use: One line added at Claude's suggestion (Anthropic; Claude Sonnet 5.5 via claude.ai),
+# October 2026: os.environ.setdefault("TF_USE_LEGACY_KERAS", "1") before TensorFlow is imported.
+
 import os
 import sys
 import argparse

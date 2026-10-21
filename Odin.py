@@ -1,3 +1,8 @@
+# AI use: The Contact-GraspNet subprocess block (check=True, CalledProcessError handling, the
+# TF_USE_LEGACY_KERAS and CUDA_LAUNCH_BLOCKING environment settings, and deleting stale results
+# before inference) was written or suggested by Claude (Anthropic; Claude Sonnet 5.5 via
+# claude.ai), October 2026. The rest was written by the author.
+
 import subprocess
 import os
 import sys

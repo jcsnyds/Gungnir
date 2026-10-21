@@ -1,3 +1,6 @@
+# AI use: One-line change suggested by Claude (Anthropic; Claude Sonnet 5.5 via claude.ai),
+# October 2026: yaml.load(f) -> yaml.safe_load(f) for PyYAML 6.
+
 import os
 import yaml
 
