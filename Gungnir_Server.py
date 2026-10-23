@@ -47,6 +47,7 @@ import cv2
 import numpy as np
 from flask import Flask, Response, abort, jsonify, request, send_file
 
+# Define file paths
 ROOT = Path(__file__).resolve().parent
 RUN_ID_RE = re.compile(r"\d{8}-\d{6}(-\d+)?")
 
@@ -70,7 +71,7 @@ class CameraFeed(threading.Thread):
         self.seq = 0
         self.depth = None  # float32 HxW, meters (0 = no return)
         self.rgb = None  # uint8 HxWx3, RGB order
-        self.K = None  # 3x3 float32 intrinsics of the colour stream (depth is aligned to it)
+        self.K = None  # 3x3 float32 intrinsics of the color stream (depth is aligned to it)
         self.rgb_jpeg = None
         self.depth_jpeg = None
         self.error = None
@@ -83,8 +84,11 @@ class CameraFeed(threading.Thread):
     def colorize_depth(self, depth: np.ndarray) -> np.ndarray:
         """Turbo colormap over [min_depth, max_depth]; black where the model ignores the pixel."""
         span = self.max_depth - self.min_depth
+        # scale so the current images max and min depths are between 0 and 1
         scaled = np.clip((depth - self.min_depth) / span, 0.0, 1.0)
+        # Apply a colormap to colorize the depth
         bgr = cv2.applyColorMap((scaled * 255).astype(np.uint8), cv2.COLORMAP_TURBO)
+        # Remove any pixels out of the specified depth range
         bgr[~((depth >= self.min_depth) & (depth <= self.max_depth))] = 0
         return bgr
 
@@ -112,29 +116,40 @@ class CameraFeed(threading.Thread):
             print("[camera]", self.error, file=sys.stderr)
             return
 
+        # Allocate memory for all variables
         cam, failures = None, 0
         frames, window_start, last_encode = 0, time.time(), 0.0
+
+        # Main loop that continues until a halt condition occurs
         while not self._halt.is_set():
             try:
+                # define camera object on first iteration
                 if cam is None:
                     cam = L515()
                     self.K = None
+                # capture a new image
                 cam.capture_image()
+                # get data from camera
                 depth = cam.depth_image
                 raw = cam.color_image  # BGR as delivered by the native shim
                 rgb = np.ascontiguousarray(raw if self.swap_rb else raw[..., ::-1])
                 if self.K is None:
                     self.K = np.asarray(cam.get_k(), dtype=np.float32)
 
+                # record the time of the current frame
                 now = time.time()
                 rgb_jpeg = depth_jpeg = None
+
+                # Only encode the images if a minimum amount of time has passes, used to get desired FPS
                 if now - last_encode >= self.min_interval:
+                    # Encode the rgb and depth images into .jpg
                     params = [cv2.IMWRITE_JPEG_QUALITY, self.jpeg_quality]
                     rgb_jpeg = cv2.imencode(".jpg", rgb[..., ::-1], params)[1].tobytes()
                     depth_jpeg = cv2.imencode(".jpg", self.colorize_depth(depth), params)[1].tobytes()
                     last_encode = now
 
                 with self.cond:
+                    # Update camera feed variables
                     self.depth, self.rgb = depth, rgb
                     self.size = (int(depth.shape[1]), int(depth.shape[0]))
                     if rgb_jpeg is not None:
@@ -144,8 +159,10 @@ class CameraFeed(threading.Thread):
                     self.error = None
                     self.cond.notify_all()
 
+                # Show a new frame was recorded
                 failures = 0
                 frames += 1
+                # Compute currest FPS
                 if now - window_start >= 2.0:
                     self.fps = frames / (now - window_start)
                     frames, window_start = 0, now
@@ -192,7 +209,9 @@ class ContactGraspnetClient:
     MAX_STARTUP_FAILURES = 3
 
     def __init__(self, argv, env, cwd, on_done, on_error):
+        # Define arguments to start up the model
         self.argv, self.env, self.cwd = argv, env, cwd
+
         self.on_done, self.on_error = on_done, on_error
         self.lock = threading.RLock()
         self.proc = None

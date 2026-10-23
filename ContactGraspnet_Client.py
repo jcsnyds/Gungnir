@@ -39,7 +39,7 @@ import numpy as np
 ROOT = Path(__file__).resolve().parent
 
 # Pairs of indices into the gripper wireframe points; same connections as visualization_utils.draw_grasps.
-GRIPPER_SEGMENTS = np.array([[0, 1], [1, 2], [2, 3], [2, 4], [4, 5], [4, 6]], dtype=np.int32)
+GRIPPER_SEGMENTS = np.array([[0, 1], [1, 2], [2, 3], [2, 4], [4, 5], [5, 6]], dtype=np.int32)
 
 _proto = None  # the real stdout, reserved for protocol messages
 
