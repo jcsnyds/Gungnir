@@ -1,0 +1,13 @@
+{
+  "id": "20261018-135143",
+  "prompt": "",
+  "captured_at": "2026-10-18 13:51:43",
+  "z_range": [
+    0.1,
+    2.5
+  ],
+  "forward_passes": 3,
+  "seconds": 4.71,
+  "num_grasps": 109,
+  "best_score": 0.6452455520629883
+}
