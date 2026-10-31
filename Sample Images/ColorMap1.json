@@ -1,0 +1,19 @@
+[
+  {"box_2d": [551, 810, 741, 873], "label": "tv remote"}
+]
+
+[
+  {"box_2d": [149, 323, 501, 606], "label": "pig"}
+]
+
+[
+  {"box_2d": [694, 641, 821, 753], "label": "computer mouse"}
+]
+
+[
+  {"box_2d": [415, 648, 613, 792], "label": "blue lighter"}
+]
+
+[
+  {"box_2d": [589, 458, 763, 569], "label": "red candle"}
+]
