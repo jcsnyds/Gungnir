@@ -513,7 +513,7 @@ class SegmentationModel:
         from sam2.automatic_mask_generator import SAM2AutomaticMaskGenerator
 
         # Load model
-        checkpoint = "sam2.1_hiera_small.pt"
+        checkpoint = "checkpoints/sam2.1_hiera_small.pt"
         model_cfg = "configs/sam2.1/sam2.1_hiera_s.yaml"
 
         device = "cuda" if torch.cuda.is_available() else "cpu"
