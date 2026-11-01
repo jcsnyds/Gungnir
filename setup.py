@@ -58,6 +58,7 @@ SAM2_SMALL_URL = (
     "https://dl.fbaipublicfiles.com/"
     "segment_anything_2/092824/sam2.1_hiera_small.pt"
 )
+
 SAM2_CHECKPOINT_DIR = Path(
     os.environ.get(
         "SAM2_CHECKPOINT_DIR",
