@@ -840,7 +840,9 @@ def create_app(feed: CameraFeed, server: ContactGraspnetServer, state: dict, arg
             if frame is None:
                 return jsonify(error="No camera frame available yet."), 503
             depth, rgb, K = frame
-            #TODO: Add Image cropping based on "prompt" and perform segmentation here
+            #TODO: Add Image cropping based on "prompt"
+
+            # Segment the RGB image to tell the object what regions belong to different objects
             seg_map = seg_model.segment(rgb)
             # Run id = current date and time, e.g. 20261017-143005.
             run_id = time.strftime("%Y%m%d-%H%M%S")
