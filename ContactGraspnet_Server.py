@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
-"""ContactGraspnet_Client: persistent Contact-GraspNet inference process (the only one that imports TensorFlow).
+"""ContactGraspnet_Server: persistent Contact-GraspNet inference process (the only one that imports TensorFlow).
 
-Started by Gungnir_Server.py. Loads the model once, then answers requests so each capture skips the
+Started by Gungnir_Client.py. Loads the model once, then answers requests so each capture skips the
 model build and checkpoint restore that `inference.py` repeats on every run.
 
 Protocol: one JSON object per line.
-    Gungnir_Server -> ContactGraspnet_Client (stdin):
+    Gungnir_Client -> ContactGraspnet_Server (stdin):
         {"cmd": "infer", "id": ..., "input": "<npz>", "output": "<npz>"}
         {"cmd": "quit"}
-    ContactGraspnet_Client -> Gungnir_Server (stdout):
+    ContactGraspnet_Server -> Gungnir_Client (stdout):
         {"event": "ready"}
         {"event": "done", "id": ..., "num_grasps": N, "seconds": S}
         {"event": "error", "id": ..., "message": ...}   (client exits afterwards)
@@ -16,7 +16,7 @@ Protocol: one JSON object per line.
 Everything else the process prints goes to stderr, so stdout carries only protocol messages.
 
 After any inference error this client exits on purpose: a CUDA "illegal address" error is sticky, so
-the session is unusable and Gungnir_Server starts a fresh client.
+the session is unusable and Gungnir_Client starts a fresh client.
 
 AI use: Written by Claude (Anthropic; Claude Sonnet 5.5 via claude.ai), October 2026. Originally
 named grasp_worker.py. Its model setup follows contact_graspnet/inference.py. Claude
@@ -55,7 +55,7 @@ _proto = None
 
 
 def emit(message: dict) -> None:
-    """Send one protocol message (a dict) to Gungnir_Server as a single line of JSON."""
+    """Send one protocol message (a dict) to Gungnir_Client as a single line of JSON."""
     # json.dumps turns the dict into text; the "\n" marks the end of the message for the reader.
     _proto.write(json.dumps(message) + "\n")
     # Flush so the line leaves our buffer immediately instead of waiting until the buffer fills up.
@@ -152,7 +152,7 @@ class GraspModel:
         # For points 2-6, set the x coordinate to +/- half the opening (keeping each point's original side),
         # which spreads the fingers to the full opening width.
         points[2:, 0] = np.sign(base_lines[2:, 0]) * opening / 2
-        # Store as 32-bit floats, which is what the saved results and the server expect.
+        # Store as 32-bit floats, which is what the saved results and the client expect.
         self.gripper_points = points.astype(np.float32)
 
     def infer(self, input_path: str, output_path: str) -> dict:
@@ -182,7 +182,7 @@ class GraspModel:
             filter_grasps=False,  # do not filter grasps by segment
             forward_passes=self.forward_passes,  # number of parallel passes (more passes -> more grasp candidates)
         )
-        # Write everything the server needs into the output file.
+        # Write everything the client needs into the output file.
         save_result(
             output_path,
             # (N, 4, 4) grasp poses in camera coordinates, as 32-bit floats
@@ -205,7 +205,7 @@ class GraspModel:
 
 
 def save_result(path, *, grasps, scores, contact_pts, pc_full, pc_colors, gripper_points) -> None:
-    """Flat arrays only (no pickles), so Gungnir_Server can load results without allow_pickle."""
+    """Flat arrays only (no pickles), so Gungnir_Client can load results without allow_pickle."""
     # If there are no colors, store an empty (0, 3) array so the key always exists in the file.
     if pc_colors is None:
         pc_colors = np.zeros((0, 3), dtype=np.uint8)
@@ -225,13 +225,13 @@ def save_result(path, *, grasps, scores, contact_pts, pc_full, pc_colors, grippe
 def main(argv=None) -> int:
     """Start-up and request loop. Returns an exit code (the process normally ends through os._exit)."""
     # Define the command-line options this process accepts.
-    parser = argparse.ArgumentParser(description="ContactGraspnet_Client: persistent Contact-GraspNet inference process")
+    parser = argparse.ArgumentParser(description="ContactGraspnet_Server: persistent Contact-GraspNet inference process")
     # Where the Contact-GraspNet repository lives (default: a "contact_graspnet" folder next to this script).
     parser.add_argument("--repo-dir", default=str(ROOT / "contact_graspnet"), help="Contact-GraspNet repository root")
     # Which trained model to load; None means "use the default folder below".
     parser.add_argument("--ckpt-dir", default=None, help="checkpoint directory (default: <repo>/checkpoints/scene_test_2048_bs3_hor_sigma_0025)")
     # How many parallel forward passes to run per request (also the network's batch size).
-    parser.add_argument("--forward-passes", type=int, default=3, help="fixed when the model is built; restart ContactGraspnet_Client to change it")
+    parser.add_argument("--forward-passes", type=int, default=3, help="fixed when the model is built; restart ContactGraspnet_Server to change it")
     # Closest depth, in meters, that is kept.
     parser.add_argument("--z-min", type=float, default=0.1)
     # Farthest depth, in meters, that is kept.
@@ -245,7 +245,7 @@ def main(argv=None) -> int:
     # "global" lets this function assign the module-level _proto variable.
     global _proto
     # os.dup(1) makes a copy of file descriptor 1 (standard output); fdopen wraps the copy in a text stream
-    # with line buffering. This copy keeps pointing at the pipe to Gungnir_Server.
+    # with line buffering. This copy keeps pointing at the pipe to Gungnir_Client.
     _proto = os.fdopen(os.dup(1), "w", buffering=1)
     # Point descriptor 1 at descriptor 2 (standard error). From now on any stray print() or C++ output that
     # would have gone to stdout lands in stderr (the log) instead, so it cannot corrupt the protocol stream.
@@ -255,18 +255,18 @@ def main(argv=None) -> int:
     try:
         model = GraspModel(args.repo_dir, ckpt_dir, args.forward_passes, (args.z_min, args.z_max))
     except BaseException as exc:  # noqa: BLE001 - report anything, including SystemExit from imports
-        # Print the full trace to stderr (which the server shows in its log panel).
+        # Print the full trace to stderr (which the client shows in its log panel).
         traceback.print_exc()
-        # Tell the server that start-up failed and why.
+        # Tell the client that start-up failed and why.
         emit({"event": "fatal", "message": f"{type(exc).__name__}: {exc}"})
         # Exit immediately with code 2; os._exit skips cleanup that could hang after a failed start.
         os._exit(2)
 
-    # The model is loaded: tell the server it may send requests now.
+    # The model is loaded: tell the client it may send requests now.
     emit({"event": "ready"})
 
-    # Read requests from standard input, one line at a time, until the server closes the pipe (end of file).
-    for line in sys.stdin:  # EOF means Gungnir_Server went away
+    # Read requests from standard input, one line at a time, until the client closes the pipe (end of file).
+    for line in sys.stdin:  # EOF means Gungnir_Client went away
         # Remove the newline and surrounding spaces.
         line = line.strip()
         # Ignore blank lines.
@@ -295,10 +295,10 @@ def main(argv=None) -> int:
         except BaseException as exc:  # noqa: BLE001
             # Print the full trace to stderr for the log.
             traceback.print_exc()
-            # Tell the server what went wrong.
+            # Tell the client what went wrong.
             emit({"event": "error", "id": request.get("id"), "message": f"{type(exc).__name__}: {exc}"})
-            # Exit right away: after a CUDA error the session is unusable, so the server will start a new client.
-            os._exit(3)  # the CUDA context may be poisoned; let Gungnir_Server start a fresh client
+            # Exit right away: after a CUDA error the session is unusable, so the client will start a new client.
+            os._exit(3)  # the CUDA context may be poisoned; let Gungnir_Client start a fresh client
 
     # Normal shutdown (a "quit" command or the pipe closing). os._exit skips TensorFlow's slow, sometimes
     # hanging cleanup.

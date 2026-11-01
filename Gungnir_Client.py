@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Gungnir_Server: browser UI for the L515 + Contact-GraspNet pipeline.
+"""Gungnir_Client: browser UI for the L515 + Contact-GraspNet pipeline.
 
-    python Gungnir_Server.py           # then open http://localhost:8000 (see SSH tunnel below)
+    python Gungnir_Client.py           # then open http://localhost:8000 (see SSH tunnel below)
 
 Run it on the Jetson from the project folder with the venv active. From your own computer:
 
@@ -12,8 +12,8 @@ model yet), and a Capture & Run button. The model output appears next to the str
 output window (http://localhost:8000/?view=results) that follows the latest result.
 
 Architecture: this process owns the camera and never imports TensorFlow. The model lives in a separate
-long-running process (ContactGraspnet_Client.py), so repeat captures do not reload it.
-ContactGraspnet_Client runs with CUDA_LAUNCH_BLOCKING=1, which your pipeline currently needs, and is
+long-running process (ContactGraspnet_Server.py), so repeat captures do not reload it.
+ContactGraspnet_Server runs with CUDA_LAUNCH_BLOCKING=1, which your pipeline currently needs, and is
 restarted automatically if it crashes.
 The camera can only be opened by one process: stop Odin.py before starting this.
 
@@ -34,18 +34,19 @@ Reviewed and tested by: Ryan Poliquin
 from __future__ import annotations
 
 import argparse  # reads the command-line options (--port, --host, --min-depth, ...)
-import collections  # provides deque, a list with a fixed maximum length (used for the client log)
+import collections  # provides deque, a list with a fixed maximum length (used for the server log)
 import importlib.util  # finds where a package is installed without importing it
 import json  # encodes/decodes the JSON messages and the saved meta.json files
 import logging  # controls how much the web server prints to the terminal
 import os  # environment variables for the child process
 import re  # regular expressions, used to validate run ids
 import signal  # lets us react to SIGTERM / SIGHUP so cleanup runs on shutdown
-import subprocess  # starts ContactGraspnet_Client.py as a separate process
+import subprocess  # starts ContactGraspnet_Server.py as a separate process
 import sys  # the Python interpreter path (sys.executable) and the error stream (sys.stderr)
 import threading  # background threads, locks, and events
 import time  # timestamps, sleeping, and run-id generation
 from pathlib import Path  # path objects that behave the same on any operating system
+import torch
 
 import cv2  # OpenCV: JPEG encoding, color maps, and drawing lines/text on images
 import numpy as np  # arrays: images, point clouds, and grasp matrices
@@ -53,7 +54,7 @@ from flask import Flask, Response, abort, jsonify, request, send_file  # the web
 
 # Define file paths
 # Folder that contains this script: resolve() makes the path absolute (following any symlinks) and
-# .parent removes the file name. Output folders and the client script are located relative to it.
+# .parent removes the file name. Output folders and the server script are located relative to it.
 ROOT = Path(__file__).resolve().parent
 # A valid run id looks like 20261017-143005 or 20261017-143005-2 (date-time, optional counter). Used to
 # reject anything else so a request can never point at a different folder (path traversal).
@@ -276,10 +277,10 @@ class CameraFeed(threading.Thread):
 
 
 # ======================================================================================
-# ContactGraspnet_Client supervision
+# ContactGraspnet_Server supervision
 # ======================================================================================
-class ContactGraspnetClient:
-    """Runs ContactGraspnet_Client.py as a subprocess, speaks JSON lines to it, and restarts it when it dies."""
+class ContactGraspnetServer:
+    """Runs ContactGraspnet_Server.py as a subprocess, speaks JSON lines to it, and restarts it when it dies."""
 
     # After this many failed start-ups in a row, stop retrying automatically.
     MAX_STARTUP_FAILURES = 3
@@ -300,24 +301,24 @@ class ContactGraspnetClient:
         self.message = ""
         # Run id of the request currently being processed (None when idle).
         self.pending = None
-        # How many times the client has been restarted after exiting.
+        # How many times the server has been restarted after exiting.
         self.restarts = 0
-        # The last 300 lines the client wrote to stderr (shown in the log panel); old lines fall off.
+        # The last 300 lines the server wrote to stderr (shown in the log panel); old lines fall off.
         self.log = collections.deque(maxlen=300)
         # Separate lock for the log, so log reads/writes never wait on the main lock.
         self._log_lock = threading.Lock()
-        # The client's own "could not start" message, if it sent one.
+        # The server's own "could not start" message, if it sent one.
         self._fatal = None
-        # Consecutive start-ups that failed before the client became ready.
+        # Consecutive start-ups that failed before the server became ready.
         self._startup_failures = 0
         # True once the current process has reported "ready".
         self._was_ready = False
-        # True while we are shutting the client down on purpose (so we do not restart it).
+        # True while we are shutting the server down on purpose (so we do not restart it).
         self._closing = False
 
     # -- lifecycle ---------------------------------------------------------------------
     def start(self):
-        """Launch the client process and the three threads that watch it."""
+        """Launch the server process and the three threads that watch it."""
         with self.lock:
             # If it is already running, there is nothing to do.
             if self.proc is not None and self.proc.poll() is None:
@@ -356,7 +357,7 @@ class ContactGraspnetClient:
         self.start()
 
     def stop(self):
-        """Shut the client down for good (used when the server exits)."""
+        """Shut the server down for good (used when the server exits)."""
         with self.lock:
             # Mark this as intentional so the watcher does not restart it.
             self._closing = True
@@ -376,7 +377,7 @@ class ContactGraspnetClient:
 
     # -- requests ----------------------------------------------------------------------
     def submit(self, run_id, input_path, output_path) -> bool:
-        """Send one inference request. Returns True if it was handed to the client, False otherwise."""
+        """Send one inference request. Returns True if it was handed to the server, False otherwise."""
         with self.lock:
             # Only accept work when the model is loaded and idle.
             if self.state != "ready" or self.proc is None:
@@ -384,13 +385,13 @@ class ContactGraspnetClient:
             # The request in the pipe protocol: the command, an id, and the input/output file paths.
             message = {"cmd": "infer", "id": run_id, "input": str(input_path), "output": str(output_path)}
             try:
-                # Write one JSON line to the client's stdin and flush it so it is sent right away.
+                # Write one JSON line to the server's stdin and flush it so it is sent right away.
                 self.proc.stdin.write(json.dumps(message) + "\n")
                 self.proc.stdin.flush()
             except (BrokenPipeError, OSError):
-                # The pipe is closed (the client died); report failure.
+                # The pipe is closed (the server died); report failure.
                 return False
-            # Mark the client busy and remember which request it is working on.
+            # Mark the server busy and remember which request it is working on.
             self.state, self.message, self.pending = "busy", "Running inference...", run_id
             return True
 
@@ -406,7 +407,7 @@ class ContactGraspnetClient:
 
     # -- reader threads ----------------------------------------------------------------
     def _read_stdout(self, proc):
-        """Read protocol messages from the client's stdout until it closes."""
+        """Read protocol messages from the server's stdout until it closes."""
         # Iterating over the pipe yields one line at a time (blocking while there is none).
         for line in proc.stdout:
             line = line.strip()
@@ -424,16 +425,16 @@ class ContactGraspnetClient:
             self._handle(proc, message)
 
     def _read_stderr(self, proc):
-        """Copy the client's stderr (TensorFlow logs, tracebacks) into the log and the terminal."""
+        """Copy the server's stderr (TensorFlow logs, tracebacks) into the log and the terminal."""
         for line in proc.stderr:
             # Remove only the trailing newline/whitespace, keeping indentation.
             line = line.rstrip()
             self._append_log(line)
-            # Also echo it to this server's terminal with a [client] prefix.
-            print("[client]", line, file=sys.stderr)
+            # Also echo it to this server's terminal with a [server] prefix.
+            print("[server]", line, file=sys.stderr)
 
     def _handle(self, proc, message):
-        """React to one protocol message from the client."""
+        """React to one protocol message from the server."""
         # Which kind of message is it? (ready / done / error / fatal)
         event = message.get("event")
         if event == "ready":
@@ -456,17 +457,17 @@ class ContactGraspnetClient:
         elif event == "error":
             with self.lock:
                 run_id, self.pending = self.pending, None
-                # The client exits after an error, so show that it is about to restart.
+                # The server exits after an error, so show that it is about to restart.
                 self.state, self.message = "starting", "Inference failed; restarting the model..."
             self.on_error(run_id, message.get("message", "unknown error"))
         elif event == "fatal":
             with self.lock:
-                # The client could not start; keep its explanation for the status message.
+                # The server could not start; keep its explanation for the status message.
                 self._fatal = message.get("message")
-                self.message = f"ContactGraspnet_Client could not start: {self._fatal}"
+                self.message = f"ContactGraspnet_Server could not start: {self._fatal}"
 
     def _watch(self, proc):
-        """Wait for the client process to exit, then decide whether to restart it."""
+        """Wait for the server process to exit, then decide whether to restart it."""
         # Block until the process ends and get its exit code.
         code = proc.wait()
         with self.lock:
@@ -486,22 +487,64 @@ class ContactGraspnetClient:
             give_up = self._startup_failures >= self.MAX_STARTUP_FAILURES
             if give_up:
                 self.state = "error"
-                # Build the message from adjacent strings; includes the client's own explanation if any.
-                self.message = (f"ContactGraspnet_Client failed to start {self._startup_failures} times (exit code {code})"
+                # Build the message from adjacent strings; includes the server's own explanation if any.
+                self.message = (f"ContactGraspnet_Server failed to start {self._startup_failures} times (exit code {code})"
                                 f"{': ' + self._fatal if self._fatal else ''}. "
                                 "Check the log, fix the cause, then press Restart model.")
             else:
                 # Otherwise it will be restarted below.
                 self.state = "starting"
-                self.message = f"ContactGraspnet_Client exited (code {code}){': ' + self._fatal if self._fatal else ''}; restarting..."
+                self.message = f"ContactGraspnet_Server exited (code {code}){': ' + self._fatal if self._fatal else ''}; restarting..."
                 self.restarts += 1
-        # A request was in flight when the client died: report it as failed.
+        # A request was in flight when the server died: report it as failed.
         if pending is not None:
-            self.on_error(pending, f"ContactGraspnet_Client exited unexpectedly (code {code}).")
+            self.on_error(pending, f"ContactGraspnet_Server exited unexpectedly (code {code}).")
         # Restart after a short pause (outside the lock).
         if not give_up:
             time.sleep(1.0)
             self.start()
+
+# ======================================================================================
+# Segmentation Model
+# ======================================================================================
+class SegmentationModel:
+    def __init__(self):
+        from sam2.build_sam import build_sam2
+        from sam2.automatic_mask_generator import SAM2AutomaticMaskGenerator
+
+        # Load model
+        checkpoint = "sam2.1_hiera_small.pt"
+        model_cfg = "configs/sam2.1/sam2.1_hiera_s.yaml"
+
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+
+        sam2 = build_sam2(model_cfg, checkpoint, device=device)
+
+        # Automatic mask generator
+        self.mask_generator = SAM2AutomaticMaskGenerator(
+            model=sam2,
+            points_per_side=32,
+            pred_iou_thresh=0.7,
+            stability_score_thresh=0.92,
+            min_mask_region_area=100
+        )
+
+    def segment(self, image):
+        # Generate masks
+        masks = self.mask_generator.generate(image)
+
+        # Sort masks by area (largest first)
+        masks = sorted(masks, key=lambda x: x["area"], reverse=True)
+
+        # Create instance ID map
+        instance_map = np.zeros(image.shape[:2], dtype=np.uint16)
+        for object_id, mask in enumerate(masks, start=1):
+            segmentation = mask["segmentation"]
+
+            # Only assign pixels that haven't already been assigned
+            instance_map[segmentation & (instance_map == 0)] = object_id
+
+        return instance_map
 
 
 # ======================================================================================
@@ -532,12 +575,25 @@ def score_tiers(scores: np.ndarray):
     return gold, green, ~(gold | green)
 
 
-def draw_overlay(rgb, grasps, scores, K, gripper_points, segments) -> bytes:
+def draw_overlay(rgb, grasps, scores, K, gripper_points, segments, segmap=None) -> bytes:
     """Grasp wireframes projected onto the captured RGB image (JPEG bytes)."""
     # OpenCV draws in BGR, so convert the RGB image (copying it so the original is untouched).
     img = cv2.cvtColor(np.ascontiguousarray(rgb), cv2.COLOR_RGB2BGR)
     # Number of grasps to draw.
     n = len(grasps)
+    #if a segmap is given, colorize it and overlay it on the original image
+    if segmap is not None:
+        # get the number of regions on the segmap
+        num_objects = np.max(segmap)
+        # define colors for each region
+        colors = np.random.default_rng(42).integers(
+            0, 256, size=(num_objects + 1, 3), dtype=np.uint8
+        )
+        colors[0] = [0, 0, 0]  # Background = black
+        # Convert segmap to colored image
+        colored_segmap = colors[segmap]
+        # lightly overlay the segmap on the original image
+        img = cv2.addWeighted(img, 0.9, colored_segmap, 0.1, 0)
     if n:
         # 3D wireframe points of every grasp in camera coordinates: shape (N, K, 3).
         pts = grasp_points(grasps, gripper_points)
@@ -694,7 +750,7 @@ def build_views(run_dir: Path) -> dict:
 # ======================================================================================
 # Web app
 # ======================================================================================
-def create_app(feed: CameraFeed, client: ContactGraspnetClient, state: dict, args) -> Flask:
+def create_app(feed: CameraFeed, server: ContactGraspnetServer, state: dict, args) -> Flask:
     """Build the Flask web application and register all of its URL routes."""
     # The Flask application object; __name__ tells Flask where this module lives.
     app = Flask(__name__)
@@ -704,6 +760,8 @@ def create_app(feed: CameraFeed, client: ContactGraspnetClient, state: dict, arg
     lock = threading.Lock()
     # Small dictionary used to cache the (large) Plotly JavaScript text after the first request.
     plotly_js = {}
+    # Load a YOLO26 semantic segmentation model
+    seg_model = SegmentationModel()
 
     def run_dir_for(run_id: str) -> Path:
         # Reject any run id that does not look like a real one (blocks "../" tricks): HTTP 404.
@@ -753,8 +811,8 @@ def create_app(feed: CameraFeed, client: ContactGraspnetClient, state: dict, arg
                 # Camera health: working?, measured fps, last error text, image size.
                 "camera": {"ok": feed.ok, "fps": round(feed.fps, 1), "error": feed.error, "size": feed.size},
                 # Model process state, its status text, restart count, and recent log lines.
-                "client": {"state": client.state, "message": client.message, "restarts": client.restarts,
-                           "log": client.log_tail(20)},
+                "server": {"state": server.state, "message": server.message, "restarts": server.restarts,
+                           "log": server.log_tail(20)},
                 # Id of the capture being processed (None when idle).
                 "busy": state["pending"],
                 # Text of the last failure, shown to the user.
@@ -774,7 +832,7 @@ def create_app(feed: CameraFeed, client: ContactGraspnetClient, state: dict, arg
         prompt = str((request.get_json(silent=True) or {}).get("prompt", ""))[:2000]
         with lock:
             # Refuse (HTTP 409 Conflict) if a capture is running or the model is not ready.
-            if state["pending"] is not None or client.state != "ready":
+            if state["pending"] is not None or server.state != "ready":
                 return jsonify(error="The model is not ready (or is already busy)."), 409
             # Grab the latest camera frame.
             frame = feed.snapshot()
@@ -782,6 +840,8 @@ def create_app(feed: CameraFeed, client: ContactGraspnetClient, state: dict, arg
             if frame is None:
                 return jsonify(error="No camera frame available yet."), 503
             depth, rgb, K = frame
+            #TODO: Add Image cropping based on "prompt" and perform segmentation here
+            seg_map = seg_model.segment(rgb)
             # Run id = current date and time, e.g. 20261017-143005.
             run_id = time.strftime("%Y%m%d-%H%M%S")
             run_dir, n = out_root / run_id, 1
@@ -793,7 +853,8 @@ def create_app(feed: CameraFeed, client: ContactGraspnetClient, state: dict, arg
             # Create the run's folder (and parents).
             run_dir.mkdir(parents=True)
             # Same keys as Odin.py's input_pc.npz, so inference.py can be pointed at any saved run.
-            np.savez(run_dir / "input.npz", depth=depth.astype(np.float32), K=K.astype(np.float32), rgb=rgb)
+            # TODO: Add segmap to input.npz file to be sent to Contact_Graspnet
+            np.savez(run_dir / "input.npz", depth=depth.astype(np.float32), K=K.astype(np.float32), rgb=rgb, seg_map=seg_map)
             # Information saved alongside the capture.
             meta = {"id": run_id, "prompt": prompt, "captured_at": time.strftime("%Y-%m-%d %H:%M:%S"),
                     "z_range": [args.min_depth, args.max_depth], "forward_passes": args.forward_passes}
@@ -805,16 +866,16 @@ def create_app(feed: CameraFeed, client: ContactGraspnetClient, state: dict, arg
             state["last_error"] = None
             state["pending"] = run_id
             # Hand the request to the model process; if that fails, undo the "in progress" mark.
-            if not client.submit(run_id, run_dir / "input.npz", run_dir / "result.npz"):
+            if not server.submit(run_id, run_dir / "input.npz", run_dir / "result.npz"):
                 state["pending"] = None
-                return jsonify(error="Could not hand the frame to ContactGraspnet_Client."), 503
+                return jsonify(error="Could not hand the frame to ContactGraspnet_Server."), 503
         # Success: tell the page which run was started.
         return jsonify(id=run_id)
 
-    @app.post("/api/client/restart")
-    def restart_client():
+    @app.post("/api/server/restart")
+    def restart_server():
         # Restart in a background thread so this request returns immediately (the restart can take a while).
-        threading.Thread(target=client.restart, daemon=True).start()
+        threading.Thread(target=server.restart, daemon=True).start()
         return jsonify(ok=True)
 
     @app.get("/api/result/<run_id>/scene.json")
@@ -838,7 +899,7 @@ def create_app(feed: CameraFeed, client: ContactGraspnetClient, state: dict, arg
 
 
 def make_callbacks(state: dict, lock_free_out_root: Path):
-    """Create the two functions the client supervisor calls when a request finishes or fails."""
+    """Create the two functions the server supervisor calls when a request finishes or fails."""
 
     def on_done(run_id, info):
         # Called when the model finishes a request successfully.
@@ -881,17 +942,17 @@ def package_dir(name: str):
 def main():
     """Parse options, start the camera and model threads, and run the web server until stopped."""
     # Define every command-line option.
-    parser = argparse.ArgumentParser(description="Gungnir_Server: browser UI for the L515 + Contact-GraspNet pipeline")
+    parser = argparse.ArgumentParser(description="Gungnir_Client: browser UI for the L515 + Contact-GraspNet pipeline")
     # Network address to listen on: localhost only by default, so only an SSH tunnel can reach it.
     parser.add_argument("--host", default="127.0.0.1", help="bind address (default: localhost only; use an SSH tunnel)")
     # TCP port of the web server.
     parser.add_argument("--port", type=int, default=8000)
     # Depth range in meters: used for the depth color map and passed to the model as its crop.
     parser.add_argument("--min-depth", type=float, default=0.1, help="metres; also the depth crop passed to the model")
-    parser.add_argument("--max-depth", type=float, default=2.5)
+    parser.add_argument("--max-depth", type=float, default=9)
     # Parallel forward passes of the model (fixed when the model is built).
     parser.add_argument("--forward-passes", type=int, default=3, help="fixed when the model is built")
-    # Which checkpoint folder to load (None = the client's default).
+    # Which checkpoint folder to load (None = the server's default).
     parser.add_argument("--ckpt-dir", default=None, help="default: contact_graspnet/checkpoints/scene_test_2048_bs3_hor_sigma_0025")
     # Where captures and results are saved.
     parser.add_argument("--output-dir", default=str(ROOT / "output" / "runs"))
@@ -902,9 +963,9 @@ def main():
     parser.add_argument("--swap-rb", action="store_true", help="flip red/blue if the live colours look wrong")
     # Flag: do not force synchronous CUDA launches in the model process.
     parser.add_argument("--no-launch-blocking", action="store_true",
-                        help="do not set CUDA_LAUNCH_BLOCKING=1 in ContactGraspnet_Client (faster, but your pipeline needs it today)")
+                        help="do not set CUDA_LAUNCH_BLOCKING=1 in ContactGraspnet_Server (faster, but your pipeline needs it today)")
     # Path of the model process script.
-    parser.add_argument("--client-script", default=str(ROOT / "ContactGraspnet_Client.py"))
+    parser.add_argument("--server-script", default=str(ROOT / "ContactGraspnet_Server.py"))
     # Read the options from the command line.
     args = parser.parse_args()
 
@@ -924,12 +985,12 @@ def main():
         # Put it first on the library search path so the custom ops find TensorFlow's shared libraries.
         env["LD_LIBRARY_PATH"] = f"{tf_dir}:{os.environ.get('LD_LIBRARY_PATH', '')}"
 
-    # The command that starts the model process: this same Python, the client script, and its options.
-    client_argv = [sys.executable, args.client_script, "--forward-passes", str(args.forward_passes),
+    # The command that starts the model process: this same Python, the server script, and its options.
+    server_argv = [sys.executable, args.server_script, "--forward-passes", str(args.forward_passes),
                    "--z-min", str(args.min_depth), "--z-max", str(args.max_depth)]
     # If a checkpoint folder was given, pass it as an absolute path.
     if args.ckpt_dir:
-        client_argv += ["--ckpt-dir", str(Path(args.ckpt_dir).resolve())]
+        server_argv += ["--ckpt-dir", str(Path(args.ckpt_dir).resolve())]
 
     # Shared state between the web routes and the callbacks:
     # pending = id of the running capture; last_error = message to show; latest = newest result summary;
@@ -938,22 +999,22 @@ def main():
     # The two functions the supervisor calls on success / failure.
     on_done, on_error = make_callbacks(state, out_root)
     # The model process supervisor (not started yet) and the camera thread (not started yet).
-    client = ContactGraspnetClient(client_argv, env, str(ROOT), on_done, on_error)
+    server = ContactGraspnetServer(server_argv, env, str(ROOT), on_done, on_error)
     feed = CameraFeed(args.min_depth, args.max_depth, args.stream_fps, args.jpeg_quality, args.swap_rb)
 
     # Only print warnings from the web server; the page polls /api/status twice a second and would flood the terminal.
     logging.getLogger("werkzeug").setLevel(logging.WARNING)  # the page polls /api/status twice a second
     # Build the web app.
-    app = create_app(feed, client, state, args)
+    app = create_app(feed, server, state, args)
     # Start the camera thread and the model process (both run in the background).
     feed.start()
-    client.start()
+    server.start()
     # Tell the user where to point the browser (flush so it shows up immediately).
     print(f"Serving on http://{args.host}:{args.port}  (results in {out_root})", flush=True)
 
     def terminate(signum, frame):
         # Turn a termination signal into KeyboardInterrupt, which the try/finally below handles like Ctrl-C.
-        raise KeyboardInterrupt  # run the same cleanup as Ctrl-C (close the camera, stop ContactGraspnet_Client)
+        raise KeyboardInterrupt  # run the same cleanup as Ctrl-C (close the camera, stop ContactGraspnet_Server)
 
     # kill / systemd stop (SIGTERM) now runs the cleanup too.
     signal.signal(signal.SIGTERM, terminate)
@@ -966,7 +1027,7 @@ def main():
         app.run(host=args.host, port=args.port, threaded=True, use_reloader=False)
     finally:
         # Always runs on exit: stop the model process first, then release the camera.
-        client.stop()
+        server.stop()
         feed.stop()
 
 
@@ -979,7 +1040,7 @@ INDEX_HTML = r"""<!doctype html>
 <meta charset="utf-8">
 <!-- Make the page scale properly on small screens -->
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Gungnir Server</title>
+<title>Gungnir Client</title>
 <style>
   /* Color palette and box sizing: the variables below are reused through the stylesheet */
   :root { --bg:#0f1318; --panel:#171d25; --line:#2a3340; --text:#e6edf3; --muted:#8b98a8;
@@ -1035,9 +1096,9 @@ INDEX_HTML = r"""<!doctype html>
 <body>
 <!-- Header: title, two status pills (filled in by the JavaScript below), and the link to the output window -->
 <header>
-  <h1>Gungnir Server</h1>
+  <h1>Gungnir Client</h1>
   <span class="pill" id="pill-camera">camera ...</span>
-  <span class="pill" id="pill-client">model ...</span>
+  <span class="pill" id="pill-server">model ...</span>
   <span class="spacer"></span>
   <!-- target="grasp-output" reuses the same browser window/tab each time the link is clicked -->
   <span class="live-only"><a href="/?view=results" target="grasp-output">Open output in a separate window</a></span>
@@ -1062,7 +1123,7 @@ INDEX_HTML = r"""<!doctype html>
       <button id="restart" class="secondary" title="Restart the model process (use after a CUDA error)">Restart model</button>
     </div>
     <div id="message"></div>
-    <details><summary>ContactGraspnet_Client log</summary><pre id="log"></pre></details>
+    <details><summary>ContactGraspnet_Server log</summary><pre id="log"></pre></details>
   </section>
   <!-- Model output section: a summary line, the interactive 3D scene, and the 2D overlay image -->
   <section>
@@ -1103,8 +1164,8 @@ INDEX_HTML = r"""<!doctype html>
             cam.ok ? `camera ${cam.fps} fps` : (cam.error ? 'camera: ' + cam.error.slice(0, 60) : 'camera starting...'),
             cam.ok ? 'ok' : (cam.error ? 'bad' : 'warn'));
     // Model pill: its state, plus the restart count if it has restarted; the color follows the state.
-    const w = s.client, cls = {ready:'ok', busy:'warn', starting:'warn', error:'bad', stopped:'bad'}[w.state];
-    setPill($('pill-client'), 'model: ' + w.state + (w.restarts ? ` (restarts: ${w.restarts})` : ''), cls);
+    const w = s.server, cls = {ready:'ok', busy:'warn', starting:'warn', error:'bad', stopped:'bad'}[w.state];
+    setPill($('pill-server'), 'model: ' + w.state + (w.restarts ? ` (restarts: ${w.restarts})` : ''), cls);
     // Show the depth range used by the color map.
     $('depth-range').textContent = `${s.config.min_depth}-${s.config.max_depth} m`;
     // The Capture button is enabled only when the model is ready, the camera works, nothing is running
@@ -1154,7 +1215,7 @@ INDEX_HTML = r"""<!doctype html>
     submitting = false;
   });
   // Restart button: ask the server to restart the model process.
-  $('restart').addEventListener('click', () => fetch('/api/client/restart', {method: 'POST'}));
+  $('restart').addEventListener('click', () => fetch('/api/server/restart', {method: 'POST'}));
 
   // Poll the server for status twice a second. The next poll is scheduled only after the current one
   // finishes, so slow responses cannot pile up.
