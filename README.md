@@ -8,6 +8,12 @@ ways the object could be grasped, and then pick it up with a physical gripper.
 
 ## Getting Started
 
+### Important Notes
+- **This code is designed to run on two computers**
+  - One computer with a GPU runs the Contact-Graspnet Server
+  - The other computer (with or without a GPU) runs the Gungnir Client
+- **Follow the setup instructions below on** ***Both*** **computers**. 
+
 #### First clone this repository.
 
 ```
@@ -30,3 +36,22 @@ For Linux: `source .venv/bin/activate`
 `python setup.py`
 
 Follow any prompts given to install the necessary packages and software.
+
+#### **On the Server computer**
+`python ContactGraspnet_Server.py`
+
+#### **On the Client computer**
+
+## Technical Details
+
+### Division of Labor
+
+- **GPU Enabled Computer (Server)**
+  - Get an image, segmentation map, and depth map 
+  - Returns the best grasp locations
+  - Communicates over HTTP to the Gungnir Client
+
+- **Generic Computer (Client)**
+  - Captures images from an Intel RealSense L515 depth camera
+  - Performs segmentation on captured images
+  - Sends data to the Contact-Graspnet Server
