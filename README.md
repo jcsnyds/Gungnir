@@ -14,33 +14,40 @@ ways the object could be grasped, and then pick it up with a physical gripper.
   - The other computer (with or without a GPU) runs the Gungnir Client
 - **Follow the setup instructions below on** ***Both*** **computers**. 
 
-#### First clone this repository.
+### First clone this repository.
 
 ```
 git clone https://github.com/jcsnyds/Gungnir.git
 cd Gungnir
 ```
 
-#### Create a new virtual environment for this project.
+### Create a new virtual environment for this project.
 
 `python -m venv .venv`
 
-#### Activate the virtual environment.
+### Activate the virtual environment.
 
 For Windows: `.venv\Scripts\activate.bat`
 
 For Linux: `source .venv/bin/activate`
 
-#### Then run the setup script.
+### Then run the setup script on both computers
 
 `python setup.py`
 
 Follow any prompts given to install the necessary packages and software.
 
-#### **On the Server computer**
+### **On the Server computer**
+- Connect the Server computer to the Client computer with an Ethernet cable. Then ssh into the Server and run the following command.
+
 `python ContactGraspnet_Server.py`
 
-#### **On the Client computer**
+This will output the Server's IP address to be used in the next step.
+
+### **On the Client computer**
+- Plug in the Intel Realsense L515 to a USB port then run the following command using the IP Address found from the step above.
+
+`python Gungnir_Client.py <gpu-computer-ip>`
 
 ## Technical Details
 

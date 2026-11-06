@@ -111,6 +111,8 @@ class CameraFeed(threading.Thread):
         self.size = None
         # Set by stop() to end the loop. Not called "_stop": that name belongs to threading.Thread.
         self._halt = threading.Event()
+        # Define segmentation model to be used
+        self.seg_model = SegmentationModel()
 
     # -- helpers ---------------------------------------------------------------------
     def colorize_depth(self, depth: np.ndarray) -> np.ndarray:
@@ -190,9 +192,13 @@ class CameraFeed(threading.Thread):
                 if now - last_encode >= self.min_interval:
                     # JPEG quality is passed to OpenCV as a flag/value pair.
                     params = [cv2.IMWRITE_JPEG_QUALITY, JPEG_QUALITY]
+                    # Segment the rgb image
+                    seg_map = self.seg_model.segment(rgb)
+                    #overlay the segmentation onto the rgb before displaying
+                    segmented_rgb = overlay_segmentation(rgb, seg_map)
                     # OpenCV expects BGR, so flip the RGB image back; [1] picks the encoded buffer out of the
                     # (success, buffer) pair and .tobytes() turns it into plain bytes.
-                    rgb_jpeg = cv2.imencode(".jpg", rgb[..., ::-1], params)[1].tobytes()
+                    rgb_jpeg = cv2.imencode(".jpg", segmented_rgb[..., ::-1], params)[1].tobytes()
                     # Same for the colourised depth image (already BGR).
                     depth_jpeg = cv2.imencode(".jpg", self.colorize_depth(depth), params)[1].tobytes()
                     last_encode = now
@@ -465,37 +471,54 @@ class ServerLink:
 # Segmentation model
 # ======================================================================================
 class SegmentationModel:
-    """SAM2 automatic mask generator: turns an RGB image into an instance-id map."""
+    """FastSAM: turns an RGB image into an instance-id map."""
 
     def __init__(self):
-        # Imported here so the (slow) SAM2 import only happens when the model is created.
-        from sam2.build_sam import build_sam2
-        from sam2.automatic_mask_generator import SAM2AutomaticMaskGenerator
+        # Imported here so the (slow) Ultralytics import only happens when the model is created.
+        from ultralytics import FastSAM
 
-        # Model weights and configuration (the checkpoint path is relative to the folder you start from).
-        checkpoint = "checkpoints/sam2.1_hiera_small.pt"
-        model_cfg = "configs/sam2.1/sam2.1_hiera_s.yaml"
+        # Weights are downloaded automatically on first use if not found locally.
+        # "FastSAM-s.pt" is the small model, "FastSAM-x.pt" the larger, more accurate one.
+        self.model = FastSAM("FastSAM-s.pt")
         # Use the GPU if PyTorch can see one, otherwise the CPU.
-        device = "cuda" if torch.cuda.is_available() else "cpu"
-        sam2 = build_sam2(model_cfg, checkpoint, device=device)
-        # The automatic mask generator proposes masks for everything in the image.
-        self.mask_generator = SAM2AutomaticMaskGenerator(
-            model=sam2,
-            points_per_side=32,  # grid of 32x32 prompt points
-            pred_iou_thresh=0.7,  # drop masks the model itself rates as poor
-            stability_score_thresh=0.92,  # drop masks that change a lot with small threshold changes
-            min_mask_region_area=100)  # remove tiny regions (pixels)
+        self.device = "cuda" if torch.cuda.is_available() else "cpu"
 
     def segment(self, image):
         """Return an array the size of the image: 0 = background, 1, 2, ... = object ids (largest object = 1)."""
-        # Generate the masks and sort them by area, largest first.
-        masks = sorted(self.mask_generator.generate(image), key=lambda x: x["area"], reverse=True)
         # Instance id map, one 16-bit id per pixel.
         instance_map = np.zeros(image.shape[:2], dtype=np.uint16)
+
+        # Ultralytics treats numpy arrays as BGR, so flip the RGB input.
+        results = self.model.predict(
+            np.ascontiguousarray(image[..., ::-1]),
+            device=self.device,
+            imgsz=1024,          # inference resolution (FastSAM default)
+            conf=0.4,            # drop low-confidence masks (roughly like pred_iou_thresh in SAM2)
+            iou=0.9,             # NMS IoU threshold; high so that distinct-but-overlapping objects are kept
+            retina_masks=True,   # return masks at the original image resolution
+            max_det=300,         # maximum number of instances
+            verbose=False,
+        )
+        result = results[0]
+        if result.masks is None:  # nothing detected
+            return instance_map
+
+        # Binary masks, shape (N, H, W).
+        masks = result.masks.data > 0.5
+        areas = masks.flatten(1).sum(dim=1)
+
+        # Drop tiny regions (same role as min_mask_region_area=100 before).
+        keep = areas >= 100
+        masks, areas = masks[keep], areas[keep]
+
+        # Sort by area, largest first.
+        order = torch.argsort(areas, descending=True)
+        masks = masks[order].cpu().numpy()
+
         for object_id, mask in enumerate(masks, start=1):
             # Only assign pixels that have not been assigned yet, so a large mask is not overwritten by a
             # later overlapping one.
-            instance_map[mask["segmentation"] & (instance_map == 0)] = object_id
+            instance_map[mask & (instance_map == 0)] = object_id
         return instance_map
 
 
@@ -527,6 +550,16 @@ def score_tiers(scores: np.ndarray):
     return gold, green, ~(gold | green)
 
 
+def overlay_segmentation(img, segmap):
+    num_objects = np.max(segmap)
+    # A fixed random colour per object id (fixed seed = same colours every time).
+    colors = np.random.default_rng(42).integers(0, 256, size=(num_objects + 1, 3), dtype=np.uint8)
+    colors[0] = [0, 0, 0]  # background = black
+    # colors[segmap] looks up a color for every pixel; the result is 80% original image + 20% segmentation colors.
+    img = cv2.addWeighted(img, 0.8, colors[segmap], 0.2, 0)
+    return img
+
+
 def draw_overlay(rgb, grasps, scores, K, gripper_points, segments, segmap=None) -> bytes:
     """Grasp wireframes projected onto the captured RGB image (JPEG bytes)."""
     # OpenCV draws in BGR, so convert the RGB image (this also makes a copy, leaving the original untouched).
@@ -535,12 +568,7 @@ def draw_overlay(rgb, grasps, scores, K, gripper_points, segments, segmap=None) 
     n = len(grasps)
     # If a segmentation map is given, colorize it and blend it over the image.
     if segmap is not None:
-        num_objects = np.max(segmap)
-        # A fixed random colour per object id (fixed seed = same colours every time).
-        colors = np.random.default_rng(42).integers(0, 256, size=(num_objects + 1, 3), dtype=np.uint8)
-        colors[0] = [0, 0, 0]  # background = black
-        # colors[segmap] looks up a color for every pixel; the result is 80% original image + 20% segmentation colors.
-        img = cv2.addWeighted(img, 0.8, colors[segmap], 0.2, 0)
+        overlay_segmentation(img, segmap)
     if n:
         # 3D wireframe points of every grasp in camera coordinates: shape (N, K, 3).
         pts = grasp_points(grasps, gripper_points)
@@ -790,7 +818,6 @@ def create_app(feed: CameraFeed, server: ServerLink, state: dict, args) -> Flask
             # Create the run's folder (and parents).
             run_dir.mkdir(parents=True)
             # Same keys as Odin.py's input_pc.npz, so inference.py can be pointed at any saved run.
-            # TODO: have ContactGraspnet_Server use seg_map (it is uploaded but not read yet)
             np.savez(run_dir / "input.npz", depth=depth.astype(np.float32), K=K.astype(np.float32), rgb=rgb, seg_map=seg_map)
             # Information saved alongside the capture.
             meta = {"id": run_id, "prompt": prompt, "captured_at": time.strftime("%Y-%m-%d %H:%M:%S"),

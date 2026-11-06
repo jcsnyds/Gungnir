@@ -563,7 +563,7 @@ def main(argv=None) -> int:
     parser.add_argument("--token", default=os.environ.get("GUNGNIR_TOKEN"), help="shared secret (default: $GUNGNIR_TOKEN)")
     parser.add_argument("--repo-dir", default=str(ROOT / "contact_graspnet"), help="Contact-GraspNet repository root")
     parser.add_argument("--ckpt-dir", default=None, help="default: <repo>/checkpoints/scene_test_2048_bs3_hor_sigma_0025")
-    parser.add_argument("--forward-passes", type=int, default=3, help="more passes -> more grasp candidates; fixed at start-up")
+    parser.add_argument("--forward-passes", type=int, default=5, help="more passes -> more grasp candidates; fixed at start-up")
     parser.add_argument("--no-launch-blocking", action="store_true",
                         help="do not set CUDA_LAUNCH_BLOCKING=1 (faster, but your pipeline needs it today)")
     args = parser.parse_args(argv)

@@ -53,20 +53,6 @@ IS_LINUX = SYSTEM == "Linux"
 # does not run on Orin, so Jetson installs come from this index and are verified by running a kernel.
 TORCH_INDEX = "https://download.pytorch.org/whl/cu132"
 
-# SAM 2.1 small checkpoint. Store the weights in a project-local checkpoints directory.
-SAM2_SMALL_URL = (
-    "https://dl.fbaipublicfiles.com/"
-    "segment_anything_2/092824/sam2.1_hiera_small.pt"
-)
-
-SAM2_CHECKPOINT_DIR = Path(
-    os.environ.get(
-        "SAM2_CHECKPOINT_DIR",
-        ROOT / "checkpoints",
-    )
-).expanduser()
-SAM2_CHECKPOINT = SAM2_CHECKPOINT_DIR / "sam2.1_hiera_small.pt"
-
 AARCH64_LINUX = IS_LINUX and platform.machine().lower() in ("aarch64", "arm64")
 
 TF_CHECK = """
@@ -118,70 +104,6 @@ def run(command: list, **kwargs) -> subprocess.CompletedProcess:
 
 def pip(*args) -> None:
     run([PY, "-m", "pip", *args])
-
-
-def download_sam2_checkpoint() -> Path:
-    """Download the SAM 2.1 small checkpoint if it is not already cached.
-
-    The download is written to a temporary file first, so an interrupted transfer will not
-    leave a partial checkpoint that looks like a completed download.
-    """
-    if SAM2_CHECKPOINT.is_file() and SAM2_CHECKPOINT.stat().st_size > 0:
-        log(f"SAM 2.1 checkpoint already exists: {SAM2_CHECKPOINT}")
-        return SAM2_CHECKPOINT
-
-    SAM2_CHECKPOINT_DIR.mkdir(parents=True, exist_ok=True)
-    temporary_path = SAM2_CHECKPOINT.with_name(SAM2_CHECKPOINT.name + ".part")
-
-    log("Downloading the SAM 2.1 small checkpoint")
-    print(f"    URL: {SAM2_SMALL_URL}")
-    print(f"    Destination: {SAM2_CHECKPOINT}")
-
-    request = urllib.request.Request(
-        SAM2_SMALL_URL,
-        headers={"User-Agent": "Python setup.py"},
-    )
-
-    try:
-        with urllib.request.urlopen(request, timeout=60) as response:
-            content_length = response.headers.get("Content-Length")
-            expected_size = int(content_length) if content_length else None
-            downloaded = 0
-
-            with temporary_path.open("wb") as checkpoint_file:
-                while True:
-                    chunk = response.read(8 * 1024 * 1024)
-                    if not chunk:
-                        break
-
-                    checkpoint_file.write(chunk)
-                    downloaded += len(chunk)
-
-                    downloaded_mb = downloaded / (1024 * 1024)
-                    if expected_size:
-                        percent = downloaded / expected_size * 100
-                        total_mb = expected_size / (1024 * 1024)
-                        status = f"{downloaded_mb:.1f}/{total_mb:.1f} MB ({percent:.1f}%)"
-                    else:
-                        status = f"{downloaded_mb:.1f} MB"
-                    print(f"\r    Downloaded {status}", end="", flush=True)
-
-        print()
-        if downloaded == 0:
-            raise RuntimeError("The SAM 2.1 checkpoint download was empty.")
-        if expected_size is not None and downloaded != expected_size:
-            raise RuntimeError(
-                f"Incomplete SAM 2.1 checkpoint download: received {downloaded} bytes, "
-                f"expected {expected_size} bytes."
-            )
-
-        os.replace(temporary_path, SAM2_CHECKPOINT)
-    except BaseException:
-        temporary_path.unlink(missing_ok=True)
-        raise
-
-    log(f"SAM 2.1 checkpoint saved: {SAM2_CHECKPOINT}")
-    return SAM2_CHECKPOINT
 
 
 def is_installed(distribution: str) -> bool:
@@ -550,8 +472,6 @@ def main() -> int:
     log(f"Installing Python dependencies from {requirements.name}")
     pip("install", "-r", requirements)
 
-    if not args.skip_sam2:
-        download_sam2_checkpoint()
 
     if AARCH64_LINUX:
         # tf-keras otherwise attempts to install PyPI TensorFlow over the Jetson-specific wheel.
