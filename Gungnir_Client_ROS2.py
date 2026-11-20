@@ -41,6 +41,8 @@ later revision, ChatGPT (OpenAI; GPT-6) modified only the camera input path: the
 thread was replaced with ROS 2 subscriptions to the image and camera-info topics published by l515_node. The
 ServerLink class, HTTP protocol, Flask routes, segmentation, inference data format, and browser interface
 were intentionally left unchanged in that revision.
+ChatGPT (OpenAI; GPT-6) later corrected the ROS executor member to avoid colliding with rclpy Node.executor,
+and hardened startup cleanup if camera or server initialization fails.
 In the most recent revision, Claude (Anthropic; Claude Sonnet 5.5 via claude.ai) added: selection of the
 best-scoring grasp; its highlighting in the 2D overlay and 3D scene; the "Proposed robot move" approval panel
 and its /api/move/* routes; the conversion of a grasp pose (4x4 matrix) into the x y z roll pitch yaw
@@ -172,9 +174,10 @@ class CameraFeed(Node):
         self.camera_info_subscription = self.create_subscription(
             CameraInfo, "/camera/color/camera_info", self._camera_info_callback, 10
         )
-        # A single-threaded executor processes these callbacks; it does not acquire frames from the camera.
-        self.executor = SingleThreadedExecutor()
-        self.executor.add_node(self)
+        # Keep our executor in a private attribute; Node.executor is managed by rclpy when a node is added.
+        self._executor = SingleThreadedExecutor()
+        # Register this node with the executor so it can process the three camera subscriptions.
+        self._executor.add_node(self)
         # Flask runs in the main thread, so ROS callbacks need a separate executor-spin thread.
         self._spin_thread = None
 
@@ -185,7 +188,7 @@ class CameraFeed(Node):
         if self._spin_thread is not None and self._spin_thread.is_alive():
             return
         # Spin services and subscriptions until stop() shuts down the executor.
-        self._spin_thread = threading.Thread(target=self.executor.spin, daemon=True, name="camera-ros-spin")
+        self._spin_thread = threading.Thread(target=self._executor.spin, daemon=True, name="camera-ros-spin")
         self._spin_thread.start()
 
     def _depth_callback(self, msg: Image):
@@ -318,7 +321,7 @@ class CameraFeed(Node):
 
     def stop(self):
         # Stop the ROS executor so no more subscription callbacks are processed.
-        self.executor.shutdown(timeout_sec=5.0)
+        self._executor.shutdown(timeout_sec=5.0)
         # Wait briefly for the executor thread to finish before the node is destroyed by main().
         if self._spin_thread is not None:
             self._spin_thread.join(timeout=5.0)
@@ -1229,9 +1232,9 @@ def main():
     on_done, on_error = make_callbacks(state, out_root, args)
     # Initialise ROS 2 before constructing CameraFeed, because CameraFeed is now a ROS 2 Node.
     rclpy.init(args=None)
-    # Create the unchanged HTTP server link and the ROS 2 camera subscriber node.
-    server = ServerLink(server_url(args.server), args.token, on_done, on_error)
-    feed = CameraFeed(args.min_depth, args.max_depth, args.stream_fps, args.swap_rb)
+    # Keep nullable handles so the finally block also works if either constructor raises an exception.
+    server = None
+    feed = None
 
     # Only print warnings from the web server; the page polls /api/status twice a second and would flood the terminal.
     logging.getLogger("werkzeug").setLevel(logging.WARNING)
@@ -1245,6 +1248,9 @@ def main():
     if hasattr(signal, "SIGHUP"):  # an SSH session dropping sends SIGHUP; without this the camera is never closed
         signal.signal(signal.SIGHUP, terminate)
     try:
+        # Create the HTTP server link and the ROS 2 camera subscriber node inside the cleanup-protected block.
+        server = ServerLink(server_url(args.server), args.token, on_done, on_error)
+        feed = CameraFeed(args.min_depth, args.max_depth, args.stream_fps, args.swap_rb)
         # Start the camera and the server connection first, so they come up while SAM2 loads in create_app().
         feed.start()
         server.start()
@@ -1256,11 +1262,13 @@ def main():
         # connections open); use_reloader=False stops Flask from starting a second copy that would also open the camera.
         app.run(host=args.host, port=args.port, threaded=True, use_reloader=False)
     finally:
-        # Always stop the unchanged HTTP server link and stop processing ROS 2 camera subscriptions.
-        server.stop()
-        feed.stop()
-        # Destroy the subscriber node after its executor has stopped.
-        feed.destroy_node()
+        # Stop the HTTP server link if its constructor completed successfully.
+        if server is not None:
+            server.stop()
+        # Stop and destroy the ROS subscriber node if its constructor completed successfully.
+        if feed is not None:
+            feed.stop()
+            feed.destroy_node()
         # Shut down the ROS 2 client library cleanly after all node resources are released.
         if rclpy.ok():
             rclpy.shutdown()
