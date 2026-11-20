@@ -19,7 +19,7 @@ expressed in --move-frame. The planner script itself is NOT modified. A proposal
 it expires after --approval-timeout seconds, because the camera may be mounted on the robot and a grasp pose is
 only valid for the arm position at the moment of capture.
 
-Architecture: this process owns the camera and the SAM2 segmentation model and never imports TensorFlow.
+Architecture: this process owns the camera and the FastSAM segmentation model and never imports TensorFlow.
 Each capture is uploaded over HTTP to ContactGraspnet_Server (which keeps the model loaded on the GPU
 computer); the result is downloaded and drawn here. The camera can only be opened by one process: stop Odin.py
 before starting this. There is no authentication on the web page: the default bind address is localhost; use
@@ -43,7 +43,7 @@ ServerLink class, HTTP protocol, Flask routes, segmentation, inference data form
 were intentionally left unchanged in that revision.
 ChatGPT (OpenAI; GPT-6) later corrected the ROS executor member to avoid colliding with rclpy Node.executor,
 and hardened startup cleanup if camera or server initialization fails.
-In the most recent revision, Claude (Anthropic; Claude Sonnet 5.5 via claude.ai) added: selection of the
+In a later revision, Claude (Anthropic; Claude Sonnet 5.5 via claude.ai) added: selection of the
 best-scoring grasp; its highlighting in the 2D overlay and 3D scene; the "Proposed robot move" approval panel
 and its /api/move/* routes; the conversion of a grasp pose (4x4 matrix) into the x y z roll pitch yaw
 arguments of Cartesian_Path_Planner.py (the inverse of that script's rpy_to_quaternion); and the code that
@@ -51,6 +51,8 @@ launches the planner as a subprocess after the user approves. Claude also fixed 
 draw_overlay() (the segmentation blend result was discarded). The author gave the requirements and is
 responsible for reviewing and testing this revision; no claim is made that it has been tested on the real
 robot or hardware.
+Claude later made a documentation-only edit: the stale "SAM2" mentions in the docstring and comments now say
+FastSAM, which is the model SegmentationModel actually loads. No code behaviour was changed by that edit.
 Reviewed and tested by: Ryan Poliquin (revisions up to and including the ROS 2 camera change). The
 grasp-approval / robot-motion revision has NOT yet been reviewed or tested by the author.
 """
@@ -77,7 +79,7 @@ from urllib.parse import urlparse  # splits an address such as "192.168.1.50:876
 
 import cv2  # OpenCV: JPEG encoding, colour maps, and drawing lines/text on images
 import numpy as np  # arrays: images, point clouds, and grasp matrices
-import torch  # needed by the SAM2 segmentation model
+import torch  # needed by the FastSAM segmentation model
 import rclpy  # ROS 2 Python client library used to receive the L515 node's topics
 from rclpy.node import Node  # ROS 2 base class for the camera subscriber node
 from rclpy.executors import SingleThreadedExecutor  # spins the camera subscriptions in one ROS callback thread
@@ -1251,11 +1253,11 @@ def main():
         # Create the HTTP server link and the ROS 2 camera subscriber node inside the cleanup-protected block.
         server = ServerLink(server_url(args.server), args.token, on_done, on_error)
         feed = CameraFeed(args.min_depth, args.max_depth, args.stream_fps, args.swap_rb)
-        # Start the camera and the server connection first, so they come up while SAM2 loads in create_app().
+        # Start the camera and the server connection first, so they come up while FastSAM loads in create_app().
         feed.start()
         server.start()
         print(f"Connecting to ContactGraspnet_Server at {server.url} ... loading the segmentation model", flush=True)
-        # Build the web app (loads SAM2: the slow part).
+        # Build the web app (loads FastSAM: the slow part).
         app = create_app(feed, server, state, args)
         print(f"Serving on http://{args.host}:{args.port}  (results in {out_root})", flush=True)
         # Run the web server until interrupted. threaded=True serves several browsers at once (the streams keep

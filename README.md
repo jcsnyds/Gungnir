@@ -9,7 +9,7 @@ ways the object could be grasped, and then pick it up with a physical gripper.
 ## Getting Started
 
 ### Important Notes
-- **This code is designed to run on two computers**
+- **This code is designed to run on two computers. Both must run Linux**
   - One computer with a GPU runs the Contact-Graspnet Server
   - The other computer (with or without a GPU) runs the Gungnir Client
 - **Follow the setup instructions below on** ***Both*** **computers**. 
@@ -21,21 +21,11 @@ git clone https://github.com/jcsnyds/Gungnir.git
 cd Gungnir
 ```
 
-### Create a new virtual environment for this project.
-
-`python -m venv .venv`
-
-### Activate the virtual environment.
-
-For Windows: `.venv\Scripts\activate.bat`
-
-For Linux: `source .venv/bin/activate`
-
 ### Then run the setup script on both computers
 
 `python setup.py`
 
-Follow any prompts given to install the necessary packages and software.
+Follow any prompts given to install the necessary packages and software. **This setup will likely take a long time**
 
 ### **On the Server computer**
 - Connect the Server computer to the Client computer with an Ethernet cable. Then ssh into the Server and run the following command.
@@ -47,7 +37,7 @@ This will output the Server's IP address to be used in the next step.
 ### **On the Client computer**
 - Plug in the Intel Realsense L515 to a USB port then run the following command using the IP Address found from the step above.
 
-`python Gungnir_Client.py <gpu-computer-ip>`
+`ros2 launch gungnir gungnir.full.launcy.py <gpu-computer-ip>`
 
 ## Technical Details
 
@@ -59,6 +49,8 @@ This will output the Server's IP address to be used in the next step.
   - Communicates over HTTP to the Gungnir Client
 
 - **Generic Computer (Client)**
+  - Runs ROS to Communicate with hardware
   - Captures images from an Intel RealSense L515 depth camera
   - Performs segmentation on captured images
   - Sends data to the Contact-Graspnet Server
+  - Chooses best path and performs trajectory planning to move to grasping location.

@@ -8,11 +8,11 @@ project-local .venv/ or venv/, or creates .venv/ automatically when needed:
     python setup.py --skip-realsense     # dependencies and verification only
     python setup.py --skip-verify        # install without final smoke tests
     python setup.py --skip-tf-ops        # skip Jetson-only TensorFlow CUDA-op compilation
-    python setup.py --skip-sam2           # skip downloading the SAM 2.1 checkpoint
     python setup.py --skip-ros-setup      # skip automatic apt-based ROS setup (advanced)
 
-The SAM 2.1 small checkpoint is stored in the project folder at
-checkpoints/sam2.1_hiera_small.pt by default. Set SAM2_CHECKPOINT_DIR to override this location.
+Segmentation in Gungnir_Client.py uses FastSAM (Ultralytics). Its weights are downloaded
+automatically the first time the client runs, so this installer has no checkpoint step; the
+first run therefore needs internet access, or FastSAM-s.pt must be placed next to the client.
 
 Optional platform-specific dependency files are supported:
     requirements-windows.txt / constraints-windows.txt
@@ -32,7 +32,14 @@ Virtual-environment auto-detection, creation, and interpreter re-execution were 
 ChatGPT (OpenAI), November 2026. ROS 2 apt installation detection, environment sourcing,
 ROS Python verification, and ROS-compatible virtual-environment configuration were also
 added with ChatGPT (OpenAI), November 2026. Existing installer functionality was retained.
-Reviewed and tested by: Ryan Poliquin
+Claude (Anthropic; Claude Sonnet 5.5 via claude.ai), November 2026, later removed the unused
+--skip-sam2 option and the SAM 2.1 checkpoint paragraph from this docstring (the client uses
+FastSAM, and no checkpoint download code existed), and extended verify_ros2_python() so it also
+runs a cv_bridge image conversion and reports the NumPy version, to catch a NumPy 2.x / apt
+cv_bridge mismatch. Claude checked only the syntax of that edit; it has not been run on a real
+machine.
+Reviewed and tested by: Ryan Poliquin (everything except the most recent Claude edit described
+above, which has not yet been reviewed or tested by the author).
 """
 
 from __future__ import annotations
@@ -292,16 +299,31 @@ def ensure_ros2_installation() -> str:
 
 
 def verify_ros2_python() -> None:
-    """Verify the selected project interpreter can import the ROS modules used by the client."""
+    """Verify the selected project interpreter can import AND use the ROS modules used by the client.
+
+    Importing cv_bridge is not a sufficient test. Ubuntu's apt cv_bridge contains compiled code built
+    against Ubuntu's NumPy 1.x. If pip installed NumPy 2.x into the venv, that NumPy shadows the system
+    one (the venv sees system site-packages) and the compiled part fails. Converting an image
+    between two encodings (rgb8 -> bgr8) runs that compiled code, so this check exercises it.
+    """
     code = """
+import numpy as np
 import rclpy
 from sensor_msgs.msg import CameraInfo, Image
 from cv_bridge import CvBridge
+print('numpy:', np.__version__, np.__file__)
 print('rclpy:', rclpy.__file__)
 print('sensor_msgs:', Image.__module__)
 print('cv_bridge:', CvBridge.__module__)
+# Round trip a tiny image through cv_bridge. Asking for a DIFFERENT encoding (bgr8) than the message
+# holds (rgb8) forces cv_bridge to run its compiled colour-conversion code, not just copy the array.
+bridge = CvBridge()
+message = bridge.cv2_to_imgmsg(np.zeros((4, 4, 3), np.uint8), encoding='rgb8')
+converted = bridge.imgmsg_to_cv2(message, desired_encoding='bgr8')
+assert converted.shape == (4, 4, 3), converted.shape
+print('cv_bridge image conversion: OK')
 """
-    log("Verifying ROS 2 imports in the project Python environment")
+    log("Verifying ROS 2 imports and cv_bridge conversion in the project Python environment")
     result = subprocess.run([PY, "-c", code], env=os.environ.copy(), text=True, capture_output=True)
     if result.stdout:
         print(result.stdout, end="", flush=True)
@@ -309,9 +331,12 @@ print('cv_bridge:', CvBridge.__module__)
         if result.stderr:
             print(result.stderr, file=sys.stderr, flush=True)
         sys.exit(
-            "ROS 2 Python imports failed inside the selected virtual environment. "
+            "ROS 2 Python imports or the cv_bridge conversion test failed inside the selected virtual environment. "
             "The venv must use the same Python minor version as the apt-installed ROS distribution, "
-            "and the /opt/ros/<distro>/setup.bash environment must be sourced."
+            "and the /opt/ros/<distro>/setup.bash environment must be sourced. "
+            "If the error above mentions NumPy 1.x / NumPy 2.x (or _ARRAY_API), pip installed NumPy 2.x "
+            "over Ubuntu's NumPy 1.x that the apt cv_bridge was built against: add `numpy<2` to "
+            "constraints-linux.txt (or requirements-linux.txt) and run setup.py again."
         )
 
 
@@ -764,7 +789,6 @@ def main() -> int:
     parser.add_argument("--skip-realsense", action="store_true", help="Skip the RealSense L515 native-wrapper setup.")
     parser.add_argument("--skip-verify", action="store_true", help="Skip final smoke tests.")
     parser.add_argument("--skip-tf-ops", action="store_true", help="Skip building Contact-GraspNet TensorFlow custom operators (Jetson only).")
-    parser.add_argument("--skip-sam2", action="store_true", help="Skip downloading the SAM 2.1 checkpoint.")
     parser.add_argument("--skip-ros-setup", action="store_true", help="Skip ROS 2 apt installation and ROS Python checks.")
     args, realsense_args = parser.parse_known_args()
 
@@ -828,4 +852,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
-
