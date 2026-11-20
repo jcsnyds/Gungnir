@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Cross-platform project installer for Contact-GraspNet and the L515 wrapper.
 
-Run inside the project's virtual environment:
+Run from the project folder. The installer reuses an active environment, detects a
+project-local .venv/ or venv/, or creates .venv/ automatically when needed:
 
     python setup.py                      # install dependencies, setup RealSense, then verify
     python setup.py --skip-realsense     # dependencies and verification only
@@ -24,6 +25,8 @@ as install.py: venv-aware installer, Jetson GPU TensorFlow/PyTorch handling, tf-
 GPU checks. Claude checked only its syntax. Later edited by the author; parts such as
 build_contact_graspnet_tfops() were not written by Claude in this conversation, so disclose
 their source separately.
+Virtual-environment auto-detection, creation, and interpreter re-execution were added with
+ChatGPT (OpenAI), November 2026. Existing installer functionality was retained.
 Reviewed and tested by: Ryan Poliquin
 """
 
@@ -41,7 +44,7 @@ import shutil
 import urllib.request
 
 ROOT = Path(__file__).resolve().parent
-PY = sys.executable  # always the venv's interpreter, never whatever `python` resolves to
+PY = sys.executable  # refreshed automatically after re-executing inside the selected environment
 REALSENSE_SETUP = ROOT / "IntelRealsense_Driver" / "setup.py"
 REQUIREMENTS = ROOT / "requirements.txt"
 CONSTRAINTS = ROOT / "constraints.txt"
@@ -114,17 +117,101 @@ def is_installed(distribution: str) -> bool:
         return False
 
 
-def require_venv() -> None:
-    if sys.prefix == sys.base_prefix and not os.environ.get("CONDA_PREFIX"):
-        if IS_WINDOWS:
-            activate = r".venv\Scripts\Activate.ps1  (PowerShell)"
-        else:
-            activate = "source .venv/bin/activate"
-        sys.exit(
-            "No virtual environment is active. Activate yours first, e.g.\n"
-            f"    {activate}\n"
-            f"Current interpreter: {PY}"
+def venv_python(environment_dir: Path) -> Path:
+    """Return the Python executable inside a virtual environment."""
+    if IS_WINDOWS:
+        return environment_dir / "Scripts" / "python.exe"
+    return environment_dir / "bin" / "python"
+
+
+def is_usable_venv(environment_dir: Path) -> bool:
+    """Check for the interpreter and configuration file that identify a venv."""
+    return (environment_dir / "pyvenv.cfg").is_file() and venv_python(environment_dir).is_file()
+
+
+def activate_and_reexec(environment_dir: Path, interpreter: Path) -> None:
+    """Re-launch this installer using the selected environment's interpreter.
+
+    A child Python process cannot activate the parent terminal session. Re-executing
+    this script with the environment's Python provides the same effect for this
+    installer and all of the subprocesses it starts.
+    """
+    environment_dir = environment_dir.resolve()
+    interpreter = Path(os.path.abspath(interpreter))  # Preserve venv Python symlinks.
+    scripts_dir = environment_dir / ("Scripts" if IS_WINDOWS else "bin")
+
+    child_env = os.environ.copy()
+    child_env["VIRTUAL_ENV"] = str(environment_dir)
+    child_env.pop("PYTHONHOME", None)
+    child_env["PATH"] = str(scripts_dir) + os.pathsep + child_env.get("PATH", "")
+
+    log(f"Starting setup.py with virtual environment: {environment_dir}")
+    os.execve(
+        str(interpreter),
+        [str(interpreter), str(Path(__file__).resolve()), *sys.argv[1:]],
+        child_env,
+    )
+
+
+def ensure_venv_and_reexec() -> None:
+    """Use an active/project virtual environment, or create .venv/ if none exists."""
+    # A currently running PEP 405 virtual environment always takes precedence.
+    if sys.prefix != sys.base_prefix:
+        log(f"Using active virtual environment: {sys.prefix}")
+        return
+
+    # Respect an active Conda environment when this interpreter belongs to it.
+    conda_prefix = os.environ.get("CONDA_PREFIX")
+    if conda_prefix and Path(conda_prefix).resolve() == Path(sys.prefix).resolve():
+        log(f"Using active Conda environment: {conda_prefix}")
+        return
+
+    # An activated environment may be present in the shell even when the user
+    # explicitly invoked /usr/bin/python3 instead of the environment's Python.
+    requested_environment = os.environ.get("VIRTUAL_ENV")
+    if requested_environment:
+        environment_dir = Path(requested_environment).expanduser()
+        interpreter = venv_python(environment_dir)
+        if is_usable_venv(environment_dir):
+            activate_and_reexec(environment_dir, interpreter)
+        print(
+            f"WARNING: VIRTUAL_ENV points to an environment without Python: {environment_dir}",
+            flush=True,
         )
+
+    # Reuse a conventional environment already present in the project directory.
+    for environment_dir in (ROOT / ".venv", ROOT / "venv"):
+        interpreter = venv_python(environment_dir)
+        if is_usable_venv(environment_dir):
+            activate_and_reexec(environment_dir, interpreter)
+
+    # No usable environment was found, so create the project's default .venv/.
+    environment_dir = ROOT / ".venv"
+    if environment_dir.exists():
+        sys.exit(
+            f"Cannot create a virtual environment because {environment_dir} already exists "
+            "but does not contain a usable Python interpreter. Remove or rename that directory, "
+            "then run setup.py again."
+        )
+
+    log(f"No virtual environment found; creating {environment_dir}")
+    try:
+        subprocess.run(
+            [sys.executable, "-m", "venv", str(environment_dir)],
+            check=True,
+        )
+    except subprocess.CalledProcessError as exc:
+        sys.exit(
+            "Virtual environment creation failed. On Ubuntu/Debian, install the venv support "
+            "package (for example, `sudo apt install python3-venv`) and run setup.py again. "
+            f"Underlying exit code: {exc.returncode}"
+        )
+
+    interpreter = venv_python(environment_dir)
+    if not is_usable_venv(environment_dir):
+        sys.exit(f"Virtual environment creation did not produce a usable environment: {environment_dir}")
+
+    activate_and_reexec(environment_dir, interpreter)
 
 
 def platform_dependency_files() -> tuple[Path, Path | None]:
@@ -440,7 +527,7 @@ def main() -> int:
     parser.add_argument("--skip-sam2", action="store_true", help="Skip downloading the SAM 2.1 checkpoint.")
     args, realsense_args = parser.parse_known_args()
 
-    require_venv()
+    ensure_venv_and_reexec()
     warn_if_system_site_packages()
     requirements, constraints = platform_dependency_files()
 
@@ -492,3 +579,4 @@ def main() -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
+
