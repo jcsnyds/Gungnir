@@ -724,7 +724,7 @@ def create_app(feed: CameraFeed, server: ServerLink, state: dict, args) -> Flask
     lock = threading.Lock()
     # Small dictionary used to cache the (large) Plotly JavaScript text after the first request.
     plotly_js = {}
-    # Load the SAM2 segmentation model (slow; this is why the camera and server link are started before it).
+    # Load the  segmentation model (slow; this is why the camera and server link are started before it).
     seg_model = SegmentationModel()
 
     def run_dir_for(run_id: str) -> Path:
