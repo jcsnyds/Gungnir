@@ -9,6 +9,7 @@ project-local .venv/ or venv/, or creates .venv/ automatically when needed:
     python setup.py --skip-verify        # install without final smoke tests
     python setup.py --skip-tf-ops        # skip Jetson-only TensorFlow CUDA-op compilation
     python setup.py --skip-sam2           # skip downloading the SAM 2.1 checkpoint
+    python setup.py --skip-ros-setup      # skip automatic apt-based ROS setup (advanced)
 
 The SAM 2.1 small checkpoint is stored in the project folder at
 checkpoints/sam2.1_hiera_small.pt by default. Set SAM2_CHECKPOINT_DIR to override this location.
@@ -16,7 +17,9 @@ checkpoints/sam2.1_hiera_small.pt by default. Set SAM2_CHECKPOINT_DIR to overrid
 Optional platform-specific dependency files are supported:
     requirements-windows.txt / constraints-windows.txt
     requirements-linux.txt   / constraints-linux.txt
-If absent, requirements.txt is used. Jetson-specific TensorFlow/CUDA wheels should not be
+If absent, requirements.txt is used. On Ubuntu 22.04 the installer selects ROS 2 Humble; on
+Ubuntu 24.04 it selects ROS 2 Jazzy, and installs the runtime modules used by Gungnir.
+Jetson-specific TensorFlow/CUDA wheels should not be
 listed in a Windows requirements file. Native L515 compilation also requires the driver's
 IntelRealsense_Driver/setup.py to support the current operating system and compiler.
 
@@ -26,7 +29,9 @@ GPU checks. Claude checked only its syntax. Later edited by the author; parts su
 build_contact_graspnet_tfops() were not written by Claude in this conversation, so disclose
 their source separately.
 Virtual-environment auto-detection, creation, and interpreter re-execution were added with
-ChatGPT (OpenAI), November 2026. Existing installer functionality was retained.
+ChatGPT (OpenAI), November 2026. ROS 2 apt installation detection, environment sourcing,
+ROS Python verification, and ROS-compatible virtual-environment configuration were also
+added with ChatGPT (OpenAI), November 2026. Existing installer functionality was retained.
 Reviewed and tested by: Ryan Poliquin
 """
 
@@ -38,6 +43,7 @@ import os
 import platform
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 import shlex
 import shutil
@@ -51,6 +57,17 @@ CONSTRAINTS = ROOT / "constraints.txt"
 SYSTEM = platform.system()
 IS_WINDOWS = SYSTEM == "Windows"
 IS_LINUX = SYSTEM == "Linux"
+
+# ROS 2 binary packages are mapped to their supported Ubuntu LTS releases.
+ROS_DISTRO_BY_UBUNTU = {"jammy": "humble", "noble": "jazzy"}
+# Required ROS packages: core Python API/CLI, launch support, messages, and cv_bridge.
+ROS_PACKAGE_SUFFIXES = ("ros-base", "ros2launch", "sensor-msgs", "cv-bridge")
+# Required to create the project venv on fresh Ubuntu installations.
+ROS_SYSTEM_PACKAGES = ("python3-venv",)
+# Official ROS package repository and signing key used by the Ubuntu deb installation instructions.
+ROS_APT_REPOSITORY = "http://packages.ros.org/ros2/ubuntu"
+ROS_APT_KEY_URL = "https://raw.githubusercontent.com/ros/rosdistro/master/ros.key"
+ROS_APT_KEYRING = Path("/usr/share/keyrings/ros-archive-keyring.gpg")
 
 # CUDA 13.2 PyTorch builds. On JetPack 7.2 a plain `pip install torch` can give a build that
 # does not run on Orin, so Jetson installs come from this index and are verified by running a kernel.
@@ -109,6 +126,195 @@ def pip(*args) -> None:
     run([PY, "-m", "pip", *args])
 
 
+def ubuntu_release() -> tuple[str, str]:
+    """Return the Ubuntu ID and codename from /etc/os-release."""
+    release_file = Path("/etc/os-release")
+    if not release_file.is_file():
+        sys.exit("ROS 2 auto-installation requires Ubuntu with /etc/os-release.")
+    values = {}
+    for line in release_file.read_text().splitlines():
+        if "=" in line and not line.lstrip().startswith("#"):
+            key, value = line.split("=", 1)
+            values[key] = value.strip().strip('"').strip("'")
+    return values.get("ID", "").lower(), values.get("UBUNTU_CODENAME", values.get("VERSION_CODENAME", "")).lower()
+
+
+def selected_ros_distro() -> tuple[str, str]:
+    """Choose the ROS 2 distribution matching the Ubuntu LTS release and architecture."""
+    ubuntu_id, codename = ubuntu_release()
+    if ubuntu_id != "ubuntu":
+        sys.exit(f"ROS 2 auto-installation currently supports Ubuntu only; detected ID={ubuntu_id!r}.")
+    distro = ROS_DISTRO_BY_UBUNTU.get(codename)
+    if distro is None:
+        supported = ", ".join(f"{name}: ROS 2 {ros}" for name, ros in ROS_DISTRO_BY_UBUNTU.items())
+        sys.exit(f"Unsupported Ubuntu release {codename!r} for automatic ROS 2 installation. Supported: {supported}.")
+    current = os.environ.get("ROS_DISTRO")
+    if current and current != distro:
+        sys.exit(
+            f"The sourced ROS_DISTRO is {current!r}, but Ubuntu {codename} maps to ROS 2 {distro!r}. "
+            "Use a matching Ubuntu/ROS combination or start a clean terminal."
+        )
+    return codename, distro
+
+
+def privileged_prefix() -> list[str]:
+    """Return the command prefix needed for package-manager and system-file changes."""
+    if hasattr(os, "geteuid") and os.geteuid() == 0:
+        return []
+    sudo = shutil.which("sudo")
+    if sudo is None:
+        sys.exit("ROS 2 installation needs administrator privileges; install sudo or rerun as root.")
+    return [sudo]
+
+
+def run_privileged(command: list[str], **kwargs) -> subprocess.CompletedProcess:
+    """Run one command with administrator privileges, prompting through sudo when needed."""
+    return run([*privileged_prefix(), *command], **kwargs)
+
+
+def deb_package_installed(package: str) -> bool:
+    """Check whether an apt package is fully installed."""
+    result = subprocess.run(
+        ["dpkg-query", "-W", "-f=${Status}", package],
+        capture_output=True,
+        text=True,
+    )
+    return result.returncode == 0 and result.stdout.strip() == "install ok installed"
+
+
+def ros_apt_repository_configured() -> bool:
+    """Check the standard apt source files for an existing ROS 2 repository entry."""
+    source_files = [Path("/etc/apt/sources.list")]
+    source_dir = Path("/etc/apt/sources.list.d")
+    if source_dir.is_dir():
+        source_files.extend(source_dir.glob("*"))
+    for source_file in source_files:
+        try:
+            if ROS_APT_REPOSITORY in source_file.read_text(errors="ignore"):
+                return True
+        except (OSError, IsADirectoryError):
+            continue
+    return False
+
+
+def configure_ros_apt_repository(codename: str) -> None:
+    """Add the official ROS 2 apt source if the machine does not already have it."""
+    if ros_apt_repository_configured():
+        log("ROS 2 apt repository already configured")
+        return
+
+    log("Configuring the official ROS 2 apt repository")
+    run_privileged(["apt-get", "update"])
+    run_privileged([
+        "apt-get", "install", "-y",
+        "curl", "ca-certificates", "gnupg", "software-properties-common",
+    ])
+    run_privileged(["add-apt-repository", "-y", "universe"])
+
+    architecture = subprocess.run(
+        ["dpkg", "--print-architecture"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    with tempfile.TemporaryDirectory(prefix="gungnir-ros-apt-") as temp_dir:
+        temp_path = Path(temp_dir)
+        key_path = temp_path / "ros-archive-keyring.gpg"
+        source_path = temp_path / "ros2.list"
+        urllib.request.urlretrieve(ROS_APT_KEY_URL, key_path)
+        run_privileged(["install", "-D", "-m", "0644", key_path, ROS_APT_KEYRING])
+        source_path.write_text(
+            f"deb [arch={architecture} signed-by={ROS_APT_KEYRING}] {ROS_APT_REPOSITORY} {codename} main\n"
+        )
+        run_privileged([
+            "install", "-D", "-m", "0644", source_path,
+            "/etc/apt/sources.list.d/ros2.list",
+        ])
+    run_privileged(["apt-get", "update"])
+
+
+def source_environment_script(script_path: Path) -> None:
+    """Source a bash setup file and import its exported variables into this Python process."""
+    if not script_path.is_file():
+        sys.exit(f"ROS environment setup file not found: {script_path}")
+    bash = shutil.which("bash") or "/bin/bash"
+    command = f"source {shlex.quote(str(script_path))} >/dev/null && env -0"
+    result = subprocess.run(
+        [bash, "-c", command],
+        env=os.environ.copy(),
+        check=True,
+        capture_output=True,
+    )
+    for entry in result.stdout.split(b"\0"):
+        if b"=" not in entry:
+            continue
+        key, value = entry.split(b"=", 1)
+        os.environ[os.fsdecode(key)] = os.fsdecode(value)
+
+
+def ensure_ros2_installation() -> str:
+    """Install the ROS runtime packages required by Gungnir, then source the ROS environment."""
+    if not IS_LINUX:
+        log("Skipping apt-based ROS 2 setup: this installer is not running on Linux")
+        return ""
+
+    codename, distro = selected_ros_distro()
+    setup_script = Path("/opt/ros") / distro / "setup.bash"
+    packages = [f"ros-{distro}-{suffix}" for suffix in ROS_PACKAGE_SUFFIXES]
+    packages.extend(ROS_SYSTEM_PACKAGES)
+    missing = [package for package in packages if not deb_package_installed(package)]
+
+    if not setup_script.is_file() or missing:
+        if missing:
+            log(f"ROS 2 {distro} is missing required packages: {', '.join(missing)}")
+        else:
+            log(f"ROS 2 {distro} setup file is missing; installing the required runtime")
+        configure_ros_apt_repository(codename)
+        run_privileged(["apt-get", "install", "-y", *packages])
+
+    if not setup_script.is_file():
+        sys.exit(f"ROS 2 installation did not create the expected setup file: {setup_script}")
+
+    current = os.environ.get("ROS_DISTRO")
+    if current and current != distro:
+        sys.exit(f"ROS_DISTRO={current!r} does not match the installed ROS 2 distribution {distro!r}.")
+    if not current:
+        log(f"Sourcing ROS 2 {distro} environment for setup.py and its child processes")
+        source_environment_script(setup_script)
+
+    overlay = os.environ.get("GUNGNIR_ROS_OVERLAY")
+    if overlay:
+        overlay_path = Path(overlay).expanduser().resolve()
+        log(f"Sourcing user ROS workspace overlay: {overlay_path}")
+        source_environment_script(overlay_path)
+
+    return distro
+
+
+def verify_ros2_python() -> None:
+    """Verify the selected project interpreter can import the ROS modules used by the client."""
+    code = """
+import rclpy
+from sensor_msgs.msg import CameraInfo, Image
+from cv_bridge import CvBridge
+print('rclpy:', rclpy.__file__)
+print('sensor_msgs:', Image.__module__)
+print('cv_bridge:', CvBridge.__module__)
+"""
+    log("Verifying ROS 2 imports in the project Python environment")
+    result = subprocess.run([PY, "-c", code], env=os.environ.copy(), text=True, capture_output=True)
+    if result.stdout:
+        print(result.stdout, end="", flush=True)
+    if result.returncode != 0:
+        if result.stderr:
+            print(result.stderr, file=sys.stderr, flush=True)
+        sys.exit(
+            "ROS 2 Python imports failed inside the selected virtual environment. "
+            "The venv must use the same Python minor version as the apt-installed ROS distribution, "
+            "and the /opt/ros/<distro>/setup.bash environment must be sourced."
+        )
+
+
 def is_installed(distribution: str) -> bool:
     try:
         metadata.version(distribution)
@@ -127,6 +333,33 @@ def venv_python(environment_dir: Path) -> Path:
 def is_usable_venv(environment_dir: Path) -> bool:
     """Check for the interpreter and configuration file that identify a venv."""
     return (environment_dir / "pyvenv.cfg").is_file() and venv_python(environment_dir).is_file()
+
+
+def enable_system_site_packages(environment_dir: Path) -> bool:
+    """Expose apt-installed Python modules to the venv, as required by ROS 2 binary packages."""
+    if not IS_LINUX:
+        return False
+    config_path = environment_dir / "pyvenv.cfg"
+    if not config_path.is_file():
+        return False
+    lines = config_path.read_text().splitlines()
+    updated = []
+    changed = False
+    found_setting = False
+    for line in lines:
+        if line.strip().lower().startswith("include-system-site-packages"):
+            updated.append("include-system-site-packages = true")
+            found_setting = True
+            changed = changed or line.split("=", 1)[-1].strip().lower() != "true"
+        else:
+            updated.append(line)
+    if not found_setting:
+        updated.append("include-system-site-packages = true")
+        changed = True
+    if changed:
+        config_path.write_text("\n".join(updated) + "\n")
+        log(f"Enabled Ubuntu system Python packages for ROS 2 in {environment_dir}")
+    return changed
 
 
 def activate_and_reexec(environment_dir: Path, interpreter: Path) -> None:
@@ -158,6 +391,9 @@ def ensure_venv_and_reexec() -> None:
     # A currently running PEP 405 virtual environment always takes precedence.
     if sys.prefix != sys.base_prefix:
         log(f"Using active virtual environment: {sys.prefix}")
+        if enable_system_site_packages(Path(sys.prefix)):
+            child_env = os.environ.copy()
+            os.execve(sys.executable, [sys.executable, str(Path(__file__).resolve()), *sys.argv[1:]], child_env)
         return
 
     # Respect an active Conda environment when this interpreter belongs to it.
@@ -173,6 +409,7 @@ def ensure_venv_and_reexec() -> None:
         environment_dir = Path(requested_environment).expanduser()
         interpreter = venv_python(environment_dir)
         if is_usable_venv(environment_dir):
+            enable_system_site_packages(environment_dir)
             activate_and_reexec(environment_dir, interpreter)
         print(
             f"WARNING: VIRTUAL_ENV points to an environment without Python: {environment_dir}",
@@ -183,6 +420,7 @@ def ensure_venv_and_reexec() -> None:
     for environment_dir in (ROOT / ".venv", ROOT / "venv"):
         interpreter = venv_python(environment_dir)
         if is_usable_venv(environment_dir):
+            enable_system_site_packages(environment_dir)
             activate_and_reexec(environment_dir, interpreter)
 
     # No usable environment was found, so create the project's default .venv/.
@@ -197,7 +435,8 @@ def ensure_venv_and_reexec() -> None:
     log(f"No virtual environment found; creating {environment_dir}")
     try:
         subprocess.run(
-            [sys.executable, "-m", "venv", str(environment_dir)],
+            [sys.executable, "-m", "venv", "--system-site-packages", str(environment_dir)] if IS_LINUX
+            else [sys.executable, "-m", "venv", str(environment_dir)],
             check=True,
         )
     except subprocess.CalledProcessError as exc:
@@ -211,6 +450,7 @@ def ensure_venv_and_reexec() -> None:
     if not is_usable_venv(environment_dir):
         sys.exit(f"Virtual environment creation did not produce a usable environment: {environment_dir}")
 
+    enable_system_site_packages(environment_dir)
     activate_and_reexec(environment_dir, interpreter)
 
 
@@ -525,7 +765,13 @@ def main() -> int:
     parser.add_argument("--skip-verify", action="store_true", help="Skip final smoke tests.")
     parser.add_argument("--skip-tf-ops", action="store_true", help="Skip building Contact-GraspNet TensorFlow custom operators (Jetson only).")
     parser.add_argument("--skip-sam2", action="store_true", help="Skip downloading the SAM 2.1 checkpoint.")
+    parser.add_argument("--skip-ros-setup", action="store_true", help="Skip ROS 2 apt installation and ROS Python checks.")
     args, realsense_args = parser.parse_known_args()
+
+    if IS_LINUX and not args.skip_ros_setup:
+        ensure_ros2_installation()
+    elif args.skip_ros_setup:
+        log("Skipping automatic ROS 2 installation and verification (--skip-ros-setup)")
 
     ensure_venv_and_reexec()
     warn_if_system_site_packages()
@@ -573,6 +819,9 @@ def main() -> int:
             "Those are Linux shared objects; Windows would need a separate native Windows/CUDA "
             "implementation or a WSL2/Linux environment."
         )
+
+    if IS_LINUX and not args.skip_ros_setup:
+        verify_ros2_python()
 
     return 0 if args.skip_verify else verify()
 
