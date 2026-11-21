@@ -1,9 +1,0 @@
-# Copied from fanuc_moveit_config (FANUC's documented recipe for custom robots).
-# The large goal-duration margin is needed because the scaled controller can slow trajectories down.
-trajectory_execution:
-  allowed_execution_duration_scaling: 1.0
-  allowed_goal_duration_margin: 1000.0
-  allowed_start_tolerance: 0.01
-
-moveit_controller_manager: moveit_ros_control_interface/Ros2ControlManager
-controller_manager_timeout: 10.0
