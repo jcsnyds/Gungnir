@@ -1,0 +1,15 @@
+<!--
+SPDX-FileCopyrightText: 2025, FANUC America Corporation
+SPDX-FileCopyrightText: 2025, FANUC CORPORATION
+SPDX-License-Identifier: Apache-2.0
+-->
+
+<library path="fanuc_robot_driver">
+  <class name="fanuc_robot_driver/FanucHardwareInterface"
+         type="fanuc_robot_driver::FanucHardwareInterface"
+         base_class_type="hardware_interface::SystemInterface">
+    <description>
+		ROS2 Control System Driver for FANUC Robots.
+    </description>
+  </class>
+</library>

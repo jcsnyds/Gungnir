@@ -1,0 +1,55 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 41c049a..424cbc1 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -115,50 +115,6 @@ configure_file(
+ 
+ add_subdirectory(src)
+ 
+-# --- Install Targets ---
+-
+-include(GNUInstallDirs)
+-
+-install(TARGETS ${SOCKPP_TARGETS}
+-	EXPORT Sockpp
+-	ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
+-	LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
+-	RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
+-)
+-
+-install(EXPORT Sockpp
+-	FILE
+-		sockppTargets.cmake
+-	NAMESPACE
+-		Sockpp::
+-	DESTINATION
+-		${CMAKE_INSTALL_LIBDIR}/cmake/sockpp
+-)
+-
+-include(CMakePackageConfigHelpers)
+-
+-write_basic_package_version_file(
+-    ${SOCKPP_GENERATED_DIR}/cmake/sockppConfigVersion.cmake
+-    VERSION ${PROJECT_VERSION}
+-    COMPATIBILITY AnyNewerVersion
+-)
+-
+-install(
+-    DIRECTORY 
+-        include/
+-        ${SOCKPP_GENERATED_DIR}/include/
+-    DESTINATION
+-        ${CMAKE_INSTALL_INCLUDEDIR}
+-)
+-
+-install(
+-	FILES
+-		${PROJECT_SOURCE_DIR}/cmake/sockppConfig.cmake
+-		${SOCKPP_GENERATED_DIR}/cmake/sockppConfigVersion.cmake
+-	DESTINATION
+-		${CMAKE_INSTALL_LIBDIR}/cmake/sockpp
+-)
+-
+ # --- Documentation ---
+ 
+ if(SOCKPP_BUILD_DOCUMENTATION)

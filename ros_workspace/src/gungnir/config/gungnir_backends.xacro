@@ -1,0 +1,70 @@
+<?xml version="1.0"?>
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro">
+
+  <xacro:macro name="pos_joint" params="name init">
+    <joint name="${name}">
+      <command_interface name="position"/>
+      <state_interface name="position">
+        <param name="initial_value">${init}</param>
+      </state_interface>
+      <state_interface name="velocity"/>
+    </joint>
+  </xacro:macro>
+
+  <!-- Mock: ros2_control GenericSystem, no physics -->
+  <xacro:macro name="gungnir_mock" params="initial_positions_file">
+    <xacro:property name="ip" value="${xacro.load_yaml(initial_positions_file)['initial_positions']}"/>
+    <ros2_control name="MockSystem" type="system">
+      <hardware>
+        <plugin>mock_components/GenericSystem</plugin>
+      </hardware>
+      <xacro:pos_joint name="J1" init="${ip['J1']}"/>
+      <xacro:pos_joint name="J2" init="${ip['J2']}"/>
+      <xacro:pos_joint name="J3" init="${ip['J3']}"/>
+      <xacro:pos_joint name="J4" init="${ip['J4']}"/>
+      <xacro:pos_joint name="J5" init="${ip['J5']}"/>
+      <xacro:pos_joint name="J6" init="${ip['J6']}"/>
+    </ros2_control>
+  </xacro:macro>
+
+  <!-- Sim: Gazebo Fortress + gz_ros2_control + L515-like RGB-D camera -->
+  <xacro:macro name="gungnir_sim" params="initial_positions_file">
+    <xacro:property name="ip" value="${xacro.load_yaml(initial_positions_file)['initial_positions']}"/>
+    <ros2_control name="GazeboSimSystem" type="system">
+      <hardware>
+        <plugin>gz_ros2_control/GazeboSimSystem</plugin>
+      </hardware>
+      <xacro:pos_joint name="J1" init="${ip['J1']}"/>
+      <xacro:pos_joint name="J2" init="${ip['J2']}"/>
+      <xacro:pos_joint name="J3" init="${ip['J3']}"/>
+      <xacro:pos_joint name="J4" init="${ip['J4']}"/>
+      <xacro:pos_joint name="J5" init="${ip['J5']}"/>
+      <xacro:pos_joint name="J6" init="${ip['J6']}"/>
+    </ros2_control>
+
+    <gazebo>
+      <plugin filename="gz_ros2_control-system" name="gz_ros2_control::GazeboSimROS2ControlPlugin">
+        <parameters>$(find gungnir)/config/ros2_controllers_sim.yaml</parameters>
+      </plugin>
+    </gazebo>
+
+    <!-- 640x480, ~70 deg HFOV, 0.25-9 m. Depth is aligned to colour. -->
+    <xacro:if value="$(arg sim_camera)">
+    <gazebo reference="camera_link">
+      <sensor name="rgbd_camera" type="rgbd_camera">
+        <always_on>1</always_on>
+        <update_rate>10</update_rate>
+        <visualize>false</visualize>
+        <topic>sim_camera</topic>
+        <ignition_frame_id>camera_depth_optical_frame</ignition_frame_id>
+        <camera>
+          <horizontal_fov>1.2217</horizontal_fov>
+          <image><width>640</width><height>480</height></image>
+          <clip><near>0.25</near><far>9.0</far></clip>
+          <depth_camera><clip><near>0.25</near><far>9.0</far></clip></depth_camera>
+        </camera>
+      </sensor>
+    </gazebo>
+    </xacro:if>
+  </xacro:macro>
+</robot>

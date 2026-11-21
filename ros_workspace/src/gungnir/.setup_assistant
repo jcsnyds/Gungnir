@@ -1,0 +1,10 @@
+moveit_setup_assistant_config:
+  urdf:
+    package: gungnir
+    relative_path: config/gungnir.urdf.xacro
+  srdf:
+    relative_path: config/gungnir.srdf
+  package_settings:
+    author_name: Ryan Poliquin
+    author_email: rpoliquin01@gmail.com
+    generated_timestamp: 1794802836

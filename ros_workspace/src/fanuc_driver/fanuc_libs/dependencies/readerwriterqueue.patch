@@ -1,0 +1,47 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 5ef0caa..68a5cac 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -14,13 +14,6 @@ target_include_directories(readerwriterqueue INTERFACE
+                                              $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}/${PROJECT_NAME}/>
+ )
+ 
+-install(FILES atomicops.h readerwriterqueue.h readerwritercircularbuffer.h LICENSE.md
+-        DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/${PROJECT_NAME})
+-
+-install(TARGETS ${PROJECT_NAME}
+-    EXPORT ${PROJECT_NAME}Targets
+-)
+-
+ write_basic_package_version_file(
+         ${CMAKE_CURRENT_BINARY_DIR}/${PROJECT_NAME}ConfigVersion.cmake
+     VERSION
+@@ -35,28 +28,6 @@ configure_package_config_file(${PROJECT_NAME}Config.cmake.in
+                 ${CMAKE_INSTALL_LIBDIR}/cmake/${PROJECT_NAME}/
+ )
+ 
+-install(EXPORT
+-                ${PROJECT_NAME}Targets
+-        FILE
+-                ${PROJECT_NAME}Targets.cmake
+-        NAMESPACE
+-                "${PROJECT_NAME}::"
+-        DESTINATION
+-                ${CMAKE_INSTALL_LIBDIR}/cmake/${PROJECT_NAME}
+-        COMPONENT
+-                Devel
+-)
+-
+-install(
+-        FILES
+-                ${CMAKE_CURRENT_BINARY_DIR}/${PROJECT_NAME}Config.cmake
+-                ${CMAKE_CURRENT_BINARY_DIR}/${PROJECT_NAME}ConfigVersion.cmake
+-        DESTINATION
+-                ${CMAKE_INSTALL_LIBDIR}/cmake/${PROJECT_NAME}
+-        COMPONENT
+-                Devel
+-)
+-
+ set(CPACK_PACKAGE_NAME ${PROJECT_NAME})
+ set(CPACK_PACKAGE_VENDOR "Cameron Desrochers <cameron@moodycamel.com>")
+ set(CPACK_PACKAGE_DESCRIPTION_SUMMARY "A single-producer, single-consumer lock-free queue for C++.")

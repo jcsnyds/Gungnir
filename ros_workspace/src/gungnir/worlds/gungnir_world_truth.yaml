@@ -1,0 +1,105 @@
+seed: 1
+camera:
+  position:
+  - 0.5818
+  - 0.0
+  - 0.3682
+  rotation:
+  - - 0.0
+    - -0.707107
+    - 0.707107
+  - - -1.0
+    - -0.0
+    - 0.0
+  - - 0.0
+    - -0.707107
+    - -0.707107
+  center_xy:
+  - 0.9
+  - 0.0
+  target_z: 0.05
+  view_dist: 0.45
+  pitch_deg: 45.0
+  heading_deg: 0.0
+  table_depth_centre_m: 0.5207
+  note: 'optical frame: x right, y down, z forward; rotation columns are these axes
+    in world coordinates'
+objects:
+- name: obj0_can
+  kind: can
+  color: red
+  dims_m:
+    radius: 0.03
+    height: 0.0925
+  world_xy_m:
+  - 0.8718
+  - 0.0278
+  yaw_rad: 1.2748
+  top_height_m: 0.0925
+  expected_depth_m: 0.4
+  pixel_uv:
+  - 288.2
+  - 228.5
+- name: obj1_ball
+  kind: ball
+  color: blue
+  dims_m:
+    radius: 0.0348
+  world_xy_m:
+  - 0.9258
+  - -0.1791
+  yaw_rad: -0.318
+  top_height_m: 0.0695
+  expected_depth_m: 0.4464
+  pixel_uv:
+  - 490.9
+  - 232.9
+- name: obj2_bottle
+  kind: bottle
+  color: green
+  dims_m:
+    body_radius: 0.0305
+    body_height: 0.08
+    neck_radius: 0.012
+    neck_height: 0.04
+  world_xy_m:
+  - 0.8541
+  - 0.1925
+  yaw_rad: 1.0609
+  top_height_m: 0.12
+  expected_depth_m: 0.368
+  pixel_uv:
+  - 81.0
+  - 218.9
+- name: obj3_box
+  kind: box
+  color: white
+  dims_m:
+    width: 0.0538
+    depth: 0.0409
+    height: 0.0718
+  world_xy_m:
+  - 0.9276
+  - 0.1368
+  yaw_rad: -1.9015
+  top_height_m: 0.0718
+  expected_depth_m: 0.4541
+  pixel_uv:
+  - 182.3
+  - 204.9
+- name: obj4_block
+  kind: block
+  color: purple
+  dims_m:
+    width: 0.0973
+    depth: 0.0729
+    height: 0.012
+  world_xy_m:
+  - 0.8504
+  - -0.089
+  yaw_rad: 0.1646
+  top_height_m: 0.012
+  expected_depth_m: 0.4418
+  pixel_uv:
+  - 412.0
+  - 304.1

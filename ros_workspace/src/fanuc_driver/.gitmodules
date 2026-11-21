@@ -1,0 +1,12 @@
+[submodule "fanuc_libs/dependencies/sockpp"]
+	path = fanuc_libs/dependencies/sockpp
+	url = https://github.com/fpagliughi/sockpp.git
+[submodule "fanuc_libs/dependencies/reflect-cpp"]
+	path = fanuc_libs/dependencies/reflect-cpp
+	url = https://github.com/getml/reflect-cpp.git
+[submodule "fanuc_libs/dependencies/readerwriterqueue"]
+	path = fanuc_libs/dependencies/readerwriterqueue
+	url = https://github.com/cameron314/readerwriterqueue.git
+[submodule "fanuc_libs/dependencies/yaml-cpp"]
+	path = fanuc_libs/dependencies/yaml-cpp
+	url = https://github.com/jbeder/yaml-cpp.git

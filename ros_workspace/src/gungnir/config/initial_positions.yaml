@@ -1,0 +1,9 @@
+# Start (home) pose for mock and sim modes, in radians (written by view_pose.py).
+# Camera at (0.582, 0.000, 0.368) m, as chosen by make_world.py: looking at (0.90, 0.00, 0.05), pitch 45 deg, heading 0 deg.
+initial_positions:
+  J1: 0
+  J2: -0.524
+  J3: -0.785
+  J4: 0
+  J5: -0.785
+  J6: 0
