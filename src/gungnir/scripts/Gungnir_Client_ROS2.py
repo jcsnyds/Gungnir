@@ -10,11 +10,21 @@ The page shows the live RGB and depth streams, a prompt box (saved with each cap
 yet), and a Capture & Run button. The model output appears next to the stream and in a separate output window
 (http://localhost:8000/?view=results) that follows the latest result.
 
-Architecture: this process owns the camera and the SAM2 segmentation model and never imports TensorFlow.
+Grasp approval and robot motion: after every result the client picks the highest-scoring grasp, draws it in
+magenta on top of the other grasps (2D overlay and 3D scene), and shows a "Proposed robot move" panel with the
+target pose. Nothing moves until the user presses "Approve & move robot" (and confirms a browser dialog). On
+approval this program starts the Cartesian path planner script (--planner-script, see Cartesian_Path_Planner.py)
+as a separate process and passes it the target pose as six numbers: x y z roll pitch yaw (metres / radians)
+expressed in --move-frame. The planner script itself is NOT modified. A proposal can be approved only once, and
+it expires after --approval-timeout seconds, because the camera may be mounted on the robot and a grasp pose is
+only valid for the arm position at the moment of capture.
+
+Architecture: this process owns the camera and the FastSAM segmentation model and never imports TensorFlow.
 Each capture is uploaded over HTTP to ContactGraspnet_Server (which keeps the model loaded on the GPU
 computer); the result is downloaded and drawn here. The camera can only be opened by one process: stop Odin.py
 before starting this. There is no authentication on the web page: the default bind address is localhost; use
---host 0.0.0.0 only on a network you trust.
+--host 0.0.0.0 only on a network you trust. Because the page can now MOVE A ROBOT, never expose it on an
+untrusted network, and keep the emergency stop within reach.
 
 Protocol with ContactGraspnet_Server (full description at the top of ContactGraspnet_Server.py): plain HTTP.
 The client polls GET /health once a second to learn the server's state (starting / ready / busy), and sends
@@ -26,13 +36,25 @@ Server address: the first argument (or $GUNGNIR_SERVER); "192.168.1.50", "192.16
 "http://192.168.1.50:8765" all work. If the server was started with a token, pass --token (or $GUNGNIR_TOKEN).
 
 AI use: This file was originally developed with assistance from Claude (Anthropic; Claude Sonnet 5.5 via
-claude.ai) in October-November 2026, based on the author's requirements and existing Gungnir code. For this
-revision, ChatGPT (OpenAI; GPT-6) modified only the camera input path: the former direct L515 capture thread
-was replaced with ROS 2 subscriptions to the image and camera-info topics published by l515_node. The
+claude.ai) in October-November 2026, based on the author's requirements and existing Gungnir code. In a
+later revision, ChatGPT (OpenAI; GPT-6) modified only the camera input path: the former direct L515 capture
+thread was replaced with ROS 2 subscriptions to the image and camera-info topics published by l515_node. The
 ServerLink class, HTTP protocol, Flask routes, segmentation, inference data format, and browser interface
-were intentionally left unchanged. The author is responsible for reviewing and testing this revision on the
-actual ROS 2 system; no claim is made that this revision has been hardware-tested.
-Reviewed and tested by: Ryan Poliquin
+were intentionally left unchanged in that revision.
+ChatGPT (OpenAI; GPT-6) later corrected the ROS executor member to avoid colliding with rclpy Node.executor,
+and hardened startup cleanup if camera or server initialization fails.
+In a later revision, Claude (Anthropic; Claude Sonnet 5.5 via claude.ai) added: selection of the
+best-scoring grasp; its highlighting in the 2D overlay and 3D scene; the "Proposed robot move" approval panel
+and its /api/move/* routes; the conversion of a grasp pose (4x4 matrix) into the x y z roll pitch yaw
+arguments of Cartesian_Path_Planner.py (the inverse of that script's rpy_to_quaternion); and the code that
+launches the planner as a subprocess after the user approves. Claude also fixed one existing bug in
+draw_overlay() (the segmentation blend result was discarded). The author gave the requirements and is
+responsible for reviewing and testing this revision; no claim is made that it has been tested on the real
+robot or hardware.
+Claude later made a documentation-only edit: the stale "SAM2" mentions in the docstring and comments now say
+FastSAM, which is the model SegmentationModel actually loads. No code behaviour was changed by that edit.
+Reviewed and tested by: Ryan Poliquin (revisions up to and including the ROS 2 camera change). The
+grasp-approval / robot-motion revision has NOT yet been reviewed or tested by the author.
 """
 
 # Store type annotations as text instead of evaluating them when the file is loaded, so annotations such as
@@ -42,10 +64,12 @@ from __future__ import annotations
 import argparse  # reads the command-line options (server address, --port, --min-depth, ...)
 import json  # encodes/decodes JSON messages and the saved meta.json files
 import logging  # controls how much the web server prints to the terminal
+import math  # asin / atan2 for turning a rotation matrix into roll-pitch-yaw angles
 import os  # environment variables ($GUNGNIR_SERVER, $GUNGNIR_TOKEN)
 import re  # regular expressions, used to validate run ids
 import signal  # lets us react to SIGTERM / SIGHUP so cleanup runs on shutdown
-import sys  # the error stream (sys.stderr)
+import subprocess  # launches Cartesian_Path_Planner.py as a separate process after the user approves a move
+import sys  # the error stream (sys.stderr) and the Python interpreter path (sys.executable)
 import threading  # background threads, locks, and events
 import time  # timestamps, sleeping, and run-id generation
 import urllib.error  # HTTPError: raised by urllib for 4xx/5xx replies
@@ -55,7 +79,7 @@ from urllib.parse import urlparse  # splits an address such as "192.168.1.50:876
 
 import cv2  # OpenCV: JPEG encoding, colour maps, and drawing lines/text on images
 import numpy as np  # arrays: images, point clouds, and grasp matrices
-import torch  # needed by the SAM2 segmentation model
+import torch  # needed by the FastSAM segmentation model
 import rclpy  # ROS 2 Python client library used to receive the L515 node's topics
 from rclpy.node import Node  # ROS 2 base class for the camera subscriber node
 from rclpy.executors import SingleThreadedExecutor  # spins the camera subscriptions in one ROS callback thread
@@ -78,6 +102,22 @@ RUN_ID_RE = re.compile(r"\d{8}-\d{6}(-\d+)?")
 # Same tiers as visualization_utils.visualize_grasps: gold = top 10%, green = top 30%, the rest faint grey.
 # Colours are in OpenCV's BGR order (blue, green, red), each channel 0-255.
 GOLD_BGR, GREEN_BGR, GREY_BGR = (0, 215, 255), (50, 205, 50), (170, 170, 170)
+# The single best grasp (the one proposed to the robot) is drawn in magenta so it cannot be confused with a tier.
+BEST_BGR = (255, 0, 255)
+# Maximum seconds the planner subprocess may run (the planner has its own internal timeouts that add up to
+# roughly 170 s; this is a safety net that kills a hung process).
+MOVE_TIMEOUT = 300
+# How many of the planner's output lines are kept and shown in the page.
+MOVE_LOG_LINES = 40
+# Pose of the robot's TCP (tool centre point) expressed in the Contact-GraspNet grasp frame. The planner moves
+# the TCP frame (--move-eef) to  T_target = T_grasp @ TCP_IN_GRASP.
+#   * Identity (the default) means: put the TCP exactly on the grasp pose Contact-GraspNet returned.
+#   * Contact-GraspNet's grasp frame has its z axis along the approach direction (the direction the fingers
+#     travel). If your tcp_frame has a different axis convention, or its origin sits at a different distance
+#     along the gripper, edit this matrix. Example: TCP origin 10 cm further back along the approach axis:
+#         TCP_IN_GRASP = np.array([[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1, -0.10], [0, 0, 0, 1]], dtype=np.float64)
+# CHECK THIS ON YOUR ROBOT with a slow, clear-workspace test before trusting it.
+TCP_IN_GRASP = np.eye(4, dtype=np.float64)
 
 
 # ======================================================================================
@@ -136,9 +176,10 @@ class CameraFeed(Node):
         self.camera_info_subscription = self.create_subscription(
             CameraInfo, "/camera/color/camera_info", self._camera_info_callback, 10
         )
-        # A single-threaded executor processes these callbacks; it does not acquire frames from the camera.
-        self.executor = SingleThreadedExecutor()
-        self.executor.add_node(self)
+        # Keep our executor in a private attribute; Node.executor is managed by rclpy when a node is added.
+        self._executor = SingleThreadedExecutor()
+        # Register this node with the executor so it can process the three camera subscriptions.
+        self._executor.add_node(self)
         # Flask runs in the main thread, so ROS callbacks need a separate executor-spin thread.
         self._spin_thread = None
 
@@ -149,7 +190,7 @@ class CameraFeed(Node):
         if self._spin_thread is not None and self._spin_thread.is_alive():
             return
         # Spin services and subscriptions until stop() shuts down the executor.
-        self._spin_thread = threading.Thread(target=self.executor.spin, daemon=True, name="camera-ros-spin")
+        self._spin_thread = threading.Thread(target=self._executor.spin, daemon=True, name="camera-ros-spin")
         self._spin_thread.start()
 
     def _depth_callback(self, msg: Image):
@@ -282,7 +323,7 @@ class CameraFeed(Node):
 
     def stop(self):
         # Stop the ROS executor so no more subscription callbacks are processed.
-        self.executor.shutdown(timeout_sec=5.0)
+        self._executor.shutdown(timeout_sec=5.0)
         # Wait briefly for the executor thread to finish before the node is destroyed by main().
         if self._spin_thread is not None:
             self._spin_thread.join(timeout=5.0)
@@ -562,6 +603,44 @@ class SegmentationModel:
 
 
 # ======================================================================================
+# Grasp pose -> robot target (used for the "Proposed robot move")
+# ======================================================================================
+def rotation_to_rpy(rot: np.ndarray):
+    """3x3 rotation matrix -> (roll, pitch, yaw) in radians.
+
+    This is the exact inverse of rpy_to_quaternion() in Cartesian_Path_Planner.py. That function builds the
+    orientation  R = Rz(yaw) @ Ry(pitch) @ Rx(roll)  (the common "ZYX" / aerospace convention), so the matrix
+    elements are:  R[2,0] = -sin(pitch),  R[2,1] = cos(pitch) sin(roll),  R[2,2] = cos(pitch) cos(roll),
+                   R[1,0] =  cos(pitch) sin(yaw),  R[0,0] = cos(pitch) cos(yaw).
+    Feeding the returned angles back into the planner therefore reproduces the same orientation.
+    """
+    # sin(pitch) = -R[2,0]; clip guards against tiny numerical errors pushing the value just outside [-1, 1].
+    sin_pitch = float(np.clip(-rot[2, 0], -1.0, 1.0))
+    pitch = math.asin(sin_pitch)
+    if abs(sin_pitch) < 1.0 - 1e-6:
+        # Normal case: roll and yaw come from the entries that were divided by cos(pitch).
+        roll = math.atan2(rot[2, 1], rot[2, 2])
+        yaw = math.atan2(rot[1, 0], rot[0, 0])
+    else:
+        # Gimbal lock (pitch = +-90 degrees): roll and yaw rotate about the same axis, so only their combination
+        # is defined. Pick roll = 0 and put the whole rotation into yaw (any valid split gives the same pose).
+        roll = 0.0
+        yaw = math.atan2(-rot[0, 1], rot[1, 1])
+    return roll, pitch, yaw
+
+
+def grasp_to_target(grasp: np.ndarray):
+    """One 4x4 grasp pose (camera frame) -> ([x, y, z] metres, [roll, pitch, yaw] radians) for the planner."""
+    # Shift from the grasp frame to the robot's TCP frame (identity unless TCP_IN_GRASP was edited).
+    pose = np.asarray(grasp, dtype=np.float64) @ TCP_IN_GRASP
+    # Translation column of the matrix = where the TCP should be.
+    position = [float(v) for v in pose[:3, 3]]
+    # Rotation block of the matrix = how the TCP should be oriented, expressed as roll-pitch-yaw.
+    rpy = [float(v) for v in rotation_to_rpy(pose[:3, :3])]
+    return position, rpy
+
+
+# ======================================================================================
 # Output views (3D scene + 2D overlay)
 # ======================================================================================
 def grasp_points(grasps: np.ndarray, gripper_points: np.ndarray) -> np.ndarray:
@@ -599,15 +678,19 @@ def overlay_segmentation(img, segmap):
     return img
 
 
-def draw_overlay(rgb, grasps, scores, K, gripper_points, segments, segmap=None) -> bytes:
-    """Grasp wireframes projected onto the captured RGB image (JPEG bytes)."""
+def draw_overlay(rgb, grasps, scores, K, gripper_points, segments, segmap=None, best_index=None) -> bytes:
+    """Grasp wireframes projected onto the captured RGB image (JPEG bytes).
+
+    best_index: index (into `grasps`) of the grasp proposed to the robot; it is drawn last, thicker, in magenta.
+    """
     # OpenCV draws in BGR, so convert the RGB image (this also makes a copy, leaving the original untouched).
     img = cv2.cvtColor(np.ascontiguousarray(rgb), cv2.COLOR_RGB2BGR)
     # Number of grasps to draw.
     n = len(grasps)
-    # If a segmentation map is given, colorize it and blend it over the image.
+    # If a segmentation map is given, colorize it and blend it over the image. overlay_segmentation() RETURNS a new
+    # image, so the result must be assigned back (the earlier version discarded it, so the blend never appeared).
     if segmap is not None:
-        overlay_segmentation(img, segmap)
+        img = overlay_segmentation(img, segmap)
     if n:
         # 3D wireframe points of every grasp in camera coordinates: shape (N, K, 3).
         pts = grasp_points(grasps, gripper_points)
@@ -642,9 +725,13 @@ def draw_overlay(rgb, grasps, scores, K, gripper_points, segments, segmap=None) 
         # Draw the better grasps on top at full strength (gold last, so it is never hidden).
         draw(img, np.flatnonzero(green), GREEN_BGR, 2)
         draw(img, np.flatnonzero(gold), GOLD_BGR, 2)
+        # Finally draw the proposed (best) grasp on top of everything, thicker and in magenta, so it stands out
+        # from the gold tier it belongs to.
+        if best_index is not None:
+            draw(img, [best_index], BEST_BGR, 4)
 
     # Caption: the grasp count, plus the best score if there are any grasps.
-    label = f"{n} grasps" + (f" | best score {float(scores.max()):.2f}" if n else " | none found")
+    label = f"{n} grasps" + (f" | best score {float(scores.max()):.2f} (magenta)" if n else " | none found")
     # Draw it twice: a thick black outline first, then thin white text on top, so it is readable on any background.
     cv2.putText(img, label, (10, 24), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 0), 3, cv2.LINE_AA)
     cv2.putText(img, label, (10, 24), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1, cv2.LINE_AA)
@@ -652,8 +739,11 @@ def draw_overlay(rgb, grasps, scores, K, gripper_points, segments, segmap=None) 
     return cv2.imencode(".jpg", img, [cv2.IMWRITE_JPEG_QUALITY, 88])[1].tobytes()
 
 
-def scene_figure_json(pc, colors, grasps, scores, gripper_points, segments, max_points=30000) -> str:
-    """Interactive 3D scene as Plotly JSON. All grasps of one tier share ONE trace (not 6 per grasp)."""
+def scene_figure_json(pc, colors, grasps, scores, gripper_points, segments, max_points=30000, best_index=None) -> str:
+    """Interactive 3D scene as Plotly JSON. All grasps of one tier share ONE trace (not 6 per grasp).
+
+    best_index: index (into `grasps`) of the grasp proposed to the robot; it gets its own thick magenta trace.
+    """
     # Imported here so the program starts even before Plotly is needed.
     import plotly.graph_objects as go
     import plotly.io as pio
@@ -709,6 +799,13 @@ def scene_figure_json(pc, colors, grasps, scores, gripper_points, segments, max_
                 xyz = lines(idx)
                 traces.append(go.Scatter3d(x=xyz[:, 0], y=xyz[:, 1], z=xyz[:, 2], mode="lines",
                                            line=dict(color=color, width=width), name=name, hoverinfo="skip"))
+        # The proposed (best) grasp gets its own layer, added last so it is drawn on top, with a thicker magenta
+        # line and a legend entry that says it is the one offered to the robot.
+        if best_index is not None:
+            xyz = lines(np.array([best_index]))
+            traces.append(go.Scatter3d(x=xyz[:, 0], y=xyz[:, 1], z=xyz[:, 2], mode="lines",
+                                       line=dict(color="magenta", width=10), name="best grasp (proposed move)",
+                                       hoverinfo="skip"))
 
     # Draw three short lines at the origin showing the camera's x (red), y (green), z (blue) axes.
     for axis, color in enumerate(("red", "green", "blue")):
@@ -733,21 +830,32 @@ def scene_figure_json(pc, colors, grasps, scores, gripper_points, segments, max_
 
 
 def build_views(run_dir: Path) -> dict:
-    """Create overlay.jpg and scene.json for one finished run; returns summary numbers."""
+    """Create overlay.jpg and scene.json for one finished run; returns summary numbers (incl. the best grasp)."""
     # Open the model's result file and the frame that was sent to it.
     result, captured = np.load(run_dir / "result.npz"), np.load(run_dir / "input.npz")
     # Grasp poses and scores.
     grasps, scores = result["grasps"], result["scores"]
     # Gripper wireframe points and the point pairs to connect.
     gp, seg = result["gripper_points"], result["gripper_segments"]
+
+    # Pick the best grasp = the one with the highest score (None when the model found no grasps).
+    best_index = int(np.argmax(scores)) if scores.size else None
+    best_grasp = None
+    if best_index is not None:
+        # Convert its 4x4 pose into the x y z roll pitch yaw numbers the Cartesian planner expects.
+        position, rpy = grasp_to_target(grasps[best_index])
+        best_grasp = {"index": best_index, "score": float(scores[best_index]), "position": position, "rpy": rpy}
+
     # Make the 2D overlay and save it as a JPEG file: grasps drawn on the captured RGB image, with the segmentation
-    # map (captured["seg_map"], saved in input.npz at capture time) blended in underneath.
-    (run_dir / "overlay.jpg").write_bytes(draw_overlay(captured["rgb"], grasps, scores, captured["K"], gp, seg, captured["seg_map"]))
-    # Make the 3D scene description and save it as JSON text.
+    # map (captured["seg_map"], saved in input.npz at capture time) blended in underneath. The best grasp is magenta.
+    (run_dir / "overlay.jpg").write_bytes(
+        draw_overlay(captured["rgb"], grasps, scores, captured["K"], gp, seg, captured["seg_map"], best_index))
+    # Make the 3D scene description and save it as JSON text (the best grasp is a separate magenta layer).
     (run_dir / "scene.json").write_text(
-        scene_figure_json(result["pc_full"], result["pc_colors"], grasps, scores, gp, seg))
+        scene_figure_json(result["pc_full"], result["pc_colors"], grasps, scores, gp, seg, best_index=best_index))
     # Summary numbers for the status line (best_score is None when there are no grasps).
-    return {"num_grasps": int(len(grasps)), "best_score": float(scores.max()) if scores.size else None}
+    return {"num_grasps": int(len(grasps)), "best_score": float(scores.max()) if scores.size else None,
+            "best_grasp": best_grasp}
 
 
 # ======================================================================================
@@ -761,6 +869,9 @@ def create_app(feed: CameraFeed, server: ServerLink, state: dict, args) -> Flask
     out_root = Path(args.output_dir)
     # Lock that keeps status reads and capture requests from interleaving.
     lock = threading.Lock()
+    # Lock that protects state["proposal"] (the grasp move awaiting approval / being executed). It is created in
+    # main() because make_callbacks() needs the same lock. Lock order everywhere: `lock` first, then `move_lock`.
+    move_lock = state["move_lock"]
     # Small dictionary used to cache the (large) Plotly JavaScript text after the first request.
     plotly_js = {}
     # Load the  segmentation model (slow; this is why the camera and server link are started before it).
@@ -780,6 +891,66 @@ def create_app(feed: CameraFeed, server: ServerLink, state: dict, args) -> Flask
         # Tell the browser never to cache this response, so it always sees the latest data.
         response.headers["Cache-Control"] = "no-store"
         return response
+
+    # -- robot move proposal -----------------------------------------------------------
+    def proposal_snapshot():
+        """A JSON-safe copy of the current move proposal for the UI (None when there is none).
+
+        Also turns an unanswered proposal into "expired" once --approval-timeout seconds have passed.
+        """
+        with move_lock:
+            p = state["proposal"]
+            if p is None:
+                return None
+            # Too old to trust: the arm (and a wrist-mounted camera) may have moved since the capture.
+            if p["status"] == "awaiting" and time.time() > p["expires_at"]:
+                p["status"] = "expired"
+                p["message"] = "This proposal expired. Press Capture & run again to get a fresh grasp."
+            # Copy everything except the internal deadline, and add the remaining time for the countdown.
+            view = {k: v for k, v in p.items() if k != "expires_at"}
+            view["log"] = list(p["log"])
+            view["seconds_left"] = max(0, int(p["expires_at"] - time.time())) if p["status"] == "awaiting" else 0
+            return view
+
+    def run_move(proposal):
+        """Run Cartesian_Path_Planner.py for one approved proposal and record how it went. Runs in its own thread."""
+        # The planner's command line: six numbers (x y z roll pitch yaw) = an absolute pose in --frame, followed by
+        # its options. Numbers use fixed-point text (.6f): the planner's argparse would mistake exponent notation
+        # such as "-1e-05" for an option and fail.
+        numbers = [f"{v:.6f}" for v in (*proposal["position"], *proposal["rpy"])]
+        cmd = [sys.executable, str(args.planner_script), *numbers,
+               "--frame", args.move_frame, "--eef", args.move_eef,
+               "--group", args.move_group, "--speed", str(args.move_speed)]
+        status, note = "failed", ""
+        try:
+            # Start the planner. stderr is merged into stdout because ROS 2 loggers write to stderr and we want
+            # both in one log. It inherits this process's environment, so the sourced ROS 2 setup applies to it too.
+            proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
+            # Safety net: kill the planner if it has not finished within MOVE_TIMEOUT seconds.
+            watchdog = threading.Timer(MOVE_TIMEOUT, proc.kill)
+            watchdog.start()
+            try:
+                # Read the planner's output line by line while it runs, so the page shows live progress.
+                for line in proc.stdout:
+                    with move_lock:
+                        proposal["log"] = (proposal["log"] + [line.rstrip()])[-MOVE_LOG_LINES:]
+                # The output stream ends when the process exits; collect its exit code (0 = success).
+                code = proc.wait()
+            finally:
+                watchdog.cancel()
+            if code == 0:
+                status, note = "succeeded", "The robot reached the target (the planner reported success)."
+            elif code < 0:
+                note = (f"The planner was stopped (signal {-code}), probably by the {MOVE_TIMEOUT} s time limit. "
+                        "Check the robot's actual state before doing anything else.")
+            else:
+                note = ("The planner reported a failure, so the robot may not have moved (it refuses incomplete "
+                        "paths and large joint jumps). See the planner output below.")
+        except Exception as exc:  # noqa: BLE001
+            note = f"Could not run the planner: {type(exc).__name__}: {exc}"
+        # Record the outcome. The proposal is now used up: its status is final, so it cannot be approved again.
+        with move_lock:
+            proposal["status"], proposal["message"] = status, note
 
     @app.get("/")
     def index():
@@ -821,6 +992,8 @@ def create_app(feed: CameraFeed, server: ServerLink, state: dict, args) -> Flask
                 "last_error": state["last_error"],
                 # Summary of the newest finished result (None before the first one).
                 "result": state["latest"],
+                # The best-grasp robot move awaiting approval / running / finished (None when there is none).
+                "proposal": proposal_snapshot(),
                 # Settings the page displays (forward_passes is reported by the server).
                 "config": {"min_depth": args.min_depth, "max_depth": args.max_depth,
                            "forward_passes": server.forward_passes},
@@ -836,6 +1009,12 @@ def create_app(feed: CameraFeed, server: ServerLink, state: dict, args) -> Flask
             # Refuse (HTTP 409 Conflict) if a capture is running or the model is not ready.
             if state["pending"] is not None or server.state != "ready":
                 return jsonify(error="The model is not ready (or is already busy)."), 409
+            # Refuse while the robot is executing an approved move: the camera view (and any wrist-mounted camera)
+            # is changing, and a new proposal must not replace the one being executed.
+            with move_lock:
+                moving = state["proposal"] is not None and state["proposal"]["status"] == "running"
+            if moving:
+                return jsonify(error="The robot is moving. Wait until the move has finished."), 409
             # Grab the latest camera frame.
             frame = feed.snapshot()
             # No frame yet: HTTP 503 Service Unavailable.
@@ -868,6 +1047,10 @@ def create_app(feed: CameraFeed, server: ServerLink, state: dict, args) -> Flask
             # A new capture clears the previous error and marks this run as in progress.
             state["last_error"] = None
             state["pending"] = run_id
+            # A new capture also withdraws the old move proposal: its grasp belongs to an older camera view and
+            # must not be approvable while (or after) the new result arrives.
+            with move_lock:
+                state["proposal"] = None
             # Hand the request to the server link; if that fails, undo the "in progress" mark.
             if not server.submit(run_id, run_dir / "input.npz", run_dir / "result.npz",
                                  z_range=(args.min_depth, args.max_depth)):
@@ -875,6 +1058,44 @@ def create_app(feed: CameraFeed, server: ServerLink, state: dict, args) -> Flask
                 return jsonify(error="ContactGraspnet_Server is not ready."), 503
         # Success: tell the page which run was started.
         return jsonify(id=run_id)
+
+    @app.post("/api/move/approve")
+    def move_approve():
+        """The user approved the proposed move: start the Cartesian planner (once) for exactly that proposal."""
+        # The page sends the run id it is showing, so an approval can never apply to a different (newer) proposal.
+        run_id = str((request.get_json(silent=True) or {}).get("id", ""))
+        # Fail early, with a clear message, if the planner script is missing (nothing has been changed yet).
+        if not Path(args.planner_script).is_file():
+            return jsonify(error=f"Planner script not found: {args.planner_script} (use --planner-script)."), 500
+        with move_lock:
+            proposal = state["proposal"]
+            # No proposal, or the page is showing an older one that a newer capture has replaced.
+            if proposal is None or proposal["run_id"] != run_id:
+                return jsonify(error="That proposal is no longer current. Look at the latest result."), 409
+            # Only a proposal that is still waiting for an answer can be approved (this makes it single-use).
+            if proposal["status"] != "awaiting":
+                return jsonify(error=f"This proposal can no longer be approved (it is {proposal['status']})."), 409
+            # Too old: the arm may have moved since the capture.
+            if time.time() > proposal["expires_at"]:
+                proposal["status"] = "expired"
+                proposal["message"] = "This proposal expired. Press Capture & run again to get a fresh grasp."
+                return jsonify(error=proposal["message"]), 409
+            # Mark it running INSIDE the lock, so a second click cannot start a second move.
+            proposal["status"], proposal["message"], proposal["log"] = "running", "Planning and moving the robot...", []
+        # The planner takes a while, so it runs in its own thread and this request returns at once.
+        threading.Thread(target=run_move, args=(proposal,), daemon=True, name="robot-move").start()
+        return jsonify(ok=True)
+
+    @app.post("/api/move/decline")
+    def move_decline():
+        """The user rejected the proposed move: nothing is sent to the robot."""
+        run_id = str((request.get_json(silent=True) or {}).get("id", ""))
+        with move_lock:
+            proposal = state["proposal"]
+            # Only an unanswered proposal can be declined; anything else is left untouched.
+            if proposal is not None and proposal["run_id"] == run_id and proposal["status"] == "awaiting":
+                proposal["status"], proposal["message"] = "declined", "Move declined. The robot was not moved."
+        return jsonify(ok=True)
 
     @app.post("/api/server/restart")
     def restart_server():
@@ -902,7 +1123,7 @@ def create_app(feed: CameraFeed, server: ServerLink, state: dict, args) -> Flask
     return app
 
 
-def make_callbacks(state: dict, out_root: Path):
+def make_callbacks(state: dict, out_root: Path, args):
     """Create the two functions ServerLink calls when a request finishes or fails."""
 
     def on_done(run_id, info):
@@ -910,6 +1131,26 @@ def make_callbacks(state: dict, out_root: Path):
         try:
             # Build the overlay image and the 3D scene file from the result.
             summary = build_views(out_root / run_id)
+
+            # Turn the best grasp into a move proposal for the user to approve (or None if there are no grasps).
+            best = summary["best_grasp"]
+            proposal = None
+            if best is not None:
+                proposal = {"run_id": run_id, **best, "frame": args.move_frame, "log": [],
+                            # Deadline after which the proposal can no longer be approved.
+                            "expires_at": time.time() + args.approval_timeout}
+                if best["score"] >= args.min_score:
+                    # Good enough: wait for the user's decision.
+                    proposal["status"], proposal["message"] = "awaiting", ""
+                else:
+                    # Too weak to offer. A "skipped" proposal is still shown, so the user knows why there is no prompt.
+                    proposal["status"] = "skipped"
+                    proposal["message"] = (f"Best score {best['score']:.3f} is below --min-score "
+                                           f"{args.min_score}; no move is proposed.")
+            # Publish it (under its lock, because the web routes and the move thread also use it).
+            with state["move_lock"]:
+                state["proposal"] = proposal
+
             # The info saved when this capture started (prompt, time, ...).
             meta = state["meta"].get(run_id, {})
             # The summary the web page shows for the newest result.
@@ -917,7 +1158,7 @@ def make_callbacks(state: dict, out_root: Path):
                       "seconds": info.get("seconds"), **summary}
             # Publish it so /api/status reports it.
             state["latest"] = result
-            # Update meta.json on disk with the result numbers as well.
+            # Update meta.json on disk with the result numbers as well (this now includes the best grasp's pose).
             (out_root / run_id / "meta.json").write_text(json.dumps({**meta, **result}, indent=2))
         except Exception as exc:  # noqa: BLE001
             # Building the views failed: show why.
@@ -955,7 +1196,29 @@ def main():
     parser.add_argument("--stream-fps", type=float, default=15, help="live-view rate; lower it over a slow link")
     # Flag (no value): swap the red and blue channels.
     parser.add_argument("--swap-rb", action="store_true", help="flip red/blue if the live colours look wrong")
+    # --- robot motion (all of these only matter after the user approves a proposed move) ---
+    # The planner script that executes the move. Assumed to sit next to this file; its file name is a guess, so
+    # change the default (or pass the option) if your script is called something else.
+    parser.add_argument("--planner-script", default=str(ROOT / "Cartesian_Path_Planner.py"),
+                        help="path of the Cartesian path planner script (default: Cartesian_Path_Planner.py next to this file)")
+    # The frame the grasp pose is expressed in. Contact-GraspNet returns poses in the frame of the point cloud, which
+    # is the camera frame. If l515_node aligns depth to the COLOUR image (the intrinsics K come from the colour
+    # camera_info), the matching frame is camera_color_optical_frame instead.
+    parser.add_argument("--move-frame", default="camera_depth_optical_frame",
+                        help="TF frame of the grasp poses, passed to the planner as --frame")
+    # Passed straight through to the planner: the end-effector link, the MoveIt group, and the speed scaling.
+    parser.add_argument("--move-eef", default="tcp_frame", help="end-effector link, passed to the planner as --eef")
+    parser.add_argument("--move-group", default="manipulator", help="MoveIt planning group, passed as --group")
+    parser.add_argument("--move-speed", type=float, default=0.2, help="velocity/acceleration scaling, 0 < x <= 1")
+    # Grasps scoring below this are not offered to the robot (0 = always offer the best one).
+    parser.add_argument("--min-score", type=float, default=0.0, help="do not propose a move if the best score is lower")
+    # How long a proposal stays approvable (a grasp is only valid for the arm position at capture time).
+    parser.add_argument("--approval-timeout", type=float, default=120.0,
+                        help="seconds a proposed move can be approved before it expires")
     args = parser.parse_args()
+    # The planner expects a speed scaling factor in (0, 1]; reject anything else before the page starts.
+    if not 0.0 < args.move_speed <= 1.0:
+        parser.error("--move-speed must be greater than 0 and at most 1")
 
     # Make sure the output folder exists (creating parents; fine if it already does).
     out_root = Path(args.output_dir)
@@ -963,15 +1226,17 @@ def main():
 
     # Shared state between the web routes and the callbacks:
     # pending = id of the running capture; last_error = message to show; latest = newest result summary;
-    # meta = per-run information saved at capture time.
-    state = {"pending": None, "last_error": None, "latest": None, "meta": {}}
+    # meta = per-run information saved at capture time;
+    # proposal = the best-grasp robot move (dict, see make_callbacks) or None; move_lock = the lock that guards it.
+    state = {"pending": None, "last_error": None, "latest": None, "meta": {},
+             "proposal": None, "move_lock": threading.Lock()}
     # The two functions ServerLink calls on success / failure.
-    on_done, on_error = make_callbacks(state, out_root)
+    on_done, on_error = make_callbacks(state, out_root, args)
     # Initialise ROS 2 before constructing CameraFeed, because CameraFeed is now a ROS 2 Node.
     rclpy.init(args=None)
-    # Create the unchanged HTTP server link and the ROS 2 camera subscriber node.
-    server = ServerLink(server_url(args.server), args.token, on_done, on_error)
-    feed = CameraFeed(args.min_depth, args.max_depth, args.stream_fps, args.swap_rb)
+    # Keep nullable handles so the finally block also works if either constructor raises an exception.
+    server = None
+    feed = None
 
     # Only print warnings from the web server; the page polls /api/status twice a second and would flood the terminal.
     logging.getLogger("werkzeug").setLevel(logging.WARNING)
@@ -985,22 +1250,27 @@ def main():
     if hasattr(signal, "SIGHUP"):  # an SSH session dropping sends SIGHUP; without this the camera is never closed
         signal.signal(signal.SIGHUP, terminate)
     try:
-        # Start the camera and the server connection first, so they come up while SAM2 loads in create_app().
+        # Create the HTTP server link and the ROS 2 camera subscriber node inside the cleanup-protected block.
+        server = ServerLink(server_url(args.server), args.token, on_done, on_error)
+        feed = CameraFeed(args.min_depth, args.max_depth, args.stream_fps, args.swap_rb)
+        # Start the camera and the server connection first, so they come up while FastSAM loads in create_app().
         feed.start()
         server.start()
         print(f"Connecting to ContactGraspnet_Server at {server.url} ... loading the segmentation model", flush=True)
-        # Build the web app (loads SAM2: the slow part).
+        # Build the web app (loads FastSAM: the slow part).
         app = create_app(feed, server, state, args)
         print(f"Serving on http://{args.host}:{args.port}  (results in {out_root})", flush=True)
         # Run the web server until interrupted. threaded=True serves several browsers at once (the streams keep
         # connections open); use_reloader=False stops Flask from starting a second copy that would also open the camera.
         app.run(host=args.host, port=args.port, threaded=True, use_reloader=False)
     finally:
-        # Always stop the unchanged HTTP server link and stop processing ROS 2 camera subscriptions.
-        server.stop()
-        feed.stop()
-        # Destroy the subscriber node after its executor has stopped.
-        feed.destroy_node()
+        # Stop the HTTP server link if its constructor completed successfully.
+        if server is not None:
+            server.stop()
+        # Stop and destroy the ROS subscriber node if its constructor completed successfully.
+        if feed is not None:
+            feed.stop()
+            feed.destroy_node()
         # Shut down the ROS 2 client library cleanly after all node resources are released.
         if rclpy.ok():
             rclpy.shutdown()
@@ -1019,7 +1289,7 @@ INDEX_HTML = r"""<!doctype html>
 <style>
   /* Colour palette (reused through the stylesheet) and box sizing */
   :root { --bg:#0f1318; --panel:#171d25; --line:#2a3340; --text:#e6edf3; --muted:#8b98a8;
-          --accent:#3b82f6; --ok:#22c55e; --warn:#f59e0b; --bad:#ef4444; }
+          --accent:#3b82f6; --ok:#22c55e; --warn:#f59e0b; --bad:#ef4444; --best:#ff00ff; }
   * { box-sizing: border-box; }
   /* Page background, text colour and font */
   body { margin:0; background:var(--bg); color:var(--text); font:14px/1.45 system-ui, sans-serif; }
@@ -1037,6 +1307,9 @@ INDEX_HTML = r"""<!doctype html>
   /* Page body: sections stacked with a gap between them */
   main { padding:16px; display:grid; gap:16px; }
   section { background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:12px; }
+  /* The robot-move panel gets a magenta border (the same colour as the best grasp in the images) so it is
+     clearly the part of the page that can move hardware */
+  section#move-panel { border-color:var(--best); }
   /* Small uppercase section headings */
   h2 { font-size:13px; margin:0 0 8px; color:var(--muted); font-weight:600; letter-spacing:.04em; text-transform:uppercase; }
   /* Two equal columns; collapses to one column on narrow screens (see the media query) */
@@ -1057,8 +1330,16 @@ INDEX_HTML = r"""<!doctype html>
            font-weight:600; cursor:pointer; }
   button:disabled { background:#334155; color:#94a3b8; cursor:not-allowed; }
   button.secondary { background:transparent; border:1px solid var(--line); color:var(--muted); font-weight:400; padding:6px 12px; }
+  /* The approve button is green: it is the one action that starts robot motion */
+  button.go { background:#16a34a; }
+  button.go:disabled { background:#334155; }
   /* Status/error line under the buttons (the .bad variant is red) */
   #message { margin-top:8px; min-height:1.4em; color:var(--muted); } #message.bad { color:var(--bad); }
+  /* Same idea for the line under the approve/decline buttons (.ok = green, .bad = red) */
+  #move-message { margin-top:8px; min-height:1.4em; color:var(--muted); }
+  #move-message.ok { color:var(--ok); } #move-message.bad { color:var(--bad); }
+  /* The pose numbers of the proposed move are shown in a fixed-width font so the columns line up */
+  #move-summary { margin-bottom:10px; } #move-summary code { font-family:ui-monospace, monospace; color:var(--text); }
   /* One-line summary above the model output */
   #meta { color:var(--muted); margin-bottom:8px; }
   /* Collapsible log area with a scrollable box */
@@ -1105,9 +1386,21 @@ INDEX_HTML = r"""<!doctype html>
     <h2>Model output</h2>
     <div id="meta">No result yet. Press "Capture &amp; run".</div>
     <div class="two">
-      <figure><div id="scene3d">3D scene appears here</div><figcaption>3D point cloud and grasps (drag to rotate, scroll to zoom)</figcaption></figure>
-      <figure><img class="view" id="overlay" alt="Grasps overlaid on the captured RGB image"><figcaption>Grasps projected onto the captured RGB image (gold = top 10%, green = top 30%)</figcaption></figure>
+      <figure><div id="scene3d">3D scene appears here</div><figcaption>3D point cloud and grasps (drag to rotate, scroll to zoom). The best grasp is the thick magenta one.</figcaption></figure>
+      <figure><img class="view" id="overlay" alt="Grasps overlaid on the captured RGB image"><figcaption>Grasps projected onto the captured RGB image (gold = top 10%, green = top 30%, magenta = best grasp, proposed for the robot)</figcaption></figure>
     </div>
+  </section>
+  <!-- Proposed robot move: hidden until a result has a best grasp. The buttons only send the user's decision to
+       the server; nothing moves unless the user approves (and confirms the browser dialog). -->
+  <section id="move-panel" hidden>
+    <h2>Proposed robot move</h2>
+    <div id="move-summary"></div>
+    <div class="controls">
+      <button id="move-approve" class="go" disabled>Approve &amp; move robot</button>
+      <button id="move-decline" class="secondary" disabled>Decline</button>
+    </div>
+    <div id="move-message"></div>
+    <details><summary>Cartesian planner output</summary><pre id="move-log"></pre></details>
   </section>
 </main>
 <!-- Plotly's JavaScript library, served by this same program (no internet needed) -->
@@ -1123,6 +1416,10 @@ INDEX_HTML = r"""<!doctype html>
   const $ = id => document.getElementById(id);
   // shownResult: id of the result currently displayed; submitting: true while a capture request is being sent.
   let shownResult = null, submitting = false;
+  // lastProposal: the move proposal most recently received from the server (the one the buttons act on).
+  // moveError: an error from an approve/decline request, shown under the buttons while the proposal is awaiting.
+  // movePosting: true while an approve/decline request is being sent (blocks double clicks).
+  let lastProposal = null, moveError = null, movePosting = false;
 
   // Set a pill's text and colour class (ok / warn / bad, or none).
   function setPill(el, text, cls) { el.textContent = text; el.className = 'pill ' + (cls || ''); }
@@ -1141,9 +1438,11 @@ INDEX_HTML = r"""<!doctype html>
     setPill($('pill-server'), 'model: ' + w.state + (w.restarts ? ` (restarts: ${w.restarts})` : ''), cls);
     // Show the depth range used by the colour map.
     $('depth-range').textContent = `${s.config.min_depth}-${s.config.max_depth} m`;
-    // The Capture button is enabled only when the model is ready, the camera works, nothing is running
-    // and no request is already being sent.
-    $('capture').disabled = !(w.state === 'ready' && cam.ok && !s.busy && !submitting);
+    // True while the robot is executing an approved move (a new capture is not allowed then).
+    const moving = !!(s.proposal && s.proposal.status === 'running');
+    // The Capture button is enabled only when the model is ready, the camera works, nothing is running,
+    // no request is already being sent and the robot is not moving.
+    $('capture').disabled = !(w.state === 'ready' && cam.ok && !s.busy && !submitting && !moving);
     // Message line: an error wins, then "running", then the model's own status text when it is not ready.
     if (s.last_error) say(s.last_error, true);
     else if (s.busy) say('Running inference on the captured frame...');
@@ -1153,7 +1452,65 @@ INDEX_HTML = r"""<!doctype html>
     $('log').textContent = (w.log || []).join('\n');
     // If a newer result exists than the one displayed, load it.
     if (s.result && s.result.id !== shownResult) loadResult(s.result);
+    // Update the robot-move panel (shown only when there is a proposal).
+    renderMove(s.proposal);
   }
+
+  // Update the "Proposed robot move" panel from the proposal object in the status (null = no proposal).
+  function renderMove(p) {
+    const panel = $('move-panel');
+    // A different proposal than before: forget any old request error.
+    if (!p || !lastProposal || p.run_id !== lastProposal.run_id) moveError = null;
+    lastProposal = p;
+    // No proposal (no result yet, no grasps found, or a new capture is running): hide the whole panel.
+    if (!p) { panel.hidden = true; return; }
+    panel.hidden = false;
+    // Format the target pose: position in metres, orientation as roll/pitch/yaw in radians (what the planner takes).
+    const f = v => v.toFixed(3);
+    $('move-summary').innerHTML =
+      `Best grasp #${p.index} (score <b>${p.score.toFixed(3)}</b>), drawn in magenta above.<br>` +
+      `Target in <code>${p.frame}</code>: ` +
+      `x <code>${f(p.position[0])}</code> y <code>${f(p.position[1])}</code> z <code>${f(p.position[2])}</code> m, ` +
+      `roll <code>${f(p.rpy[0])}</code> pitch <code>${f(p.rpy[1])}</code> yaw <code>${f(p.rpy[2])}</code> rad.`;
+    // The buttons work only while the proposal is waiting for an answer and no request is being sent.
+    const awaiting = p.status === 'awaiting';
+    $('move-approve').disabled = !awaiting || movePosting;
+    $('move-decline').disabled = !awaiting || movePosting;
+    // The line under the buttons: what the user is being asked, or how the move turned out.
+    let text = p.message, kind = '';
+    if (awaiting) text = moveError || `Move the robot to this grasp? This proposal expires in ${p.seconds_left} s.`;
+    if (awaiting && moveError) kind = 'bad';
+    else if (p.status === 'succeeded') kind = 'ok';
+    else if (p.status === 'failed') kind = 'bad';
+    $('move-message').textContent = text;
+    $('move-message').className = kind;
+    // The planner's own output (live while it runs).
+    $('move-log').textContent = (p.log || []).join('\n');
+  }
+
+  // Send the user's decision (approve or decline) for the proposal that is on screen.
+  async function sendMoveDecision(kind) {
+    if (!lastProposal) return;
+    movePosting = true; moveError = null;
+    $('move-approve').disabled = true; $('move-decline').disabled = true;
+    try {
+      // The proposal's run id travels with the request, so the server can reject it if a newer proposal exists.
+      const r = await fetch('/api/move/' + kind, {method: 'POST', headers: {'Content-Type': 'application/json'},
+                                                  body: JSON.stringify({id: lastProposal.run_id})});
+      if (!r.ok) moveError = (await r.json()).error || 'The request failed';
+    } catch (e) { moveError = 'Request failed: ' + e; }
+    movePosting = false;
+  }
+
+  // Approve button: ask for one explicit confirmation (it moves real hardware), then tell the server to go ahead.
+  $('move-approve').addEventListener('click', () => {
+    if (!lastProposal) return;
+    const ok = confirm('The robot will move to the magenta grasp.\n\n' +
+                       'Make sure the workspace is clear and the emergency stop is within reach.\n\nMove the robot now?');
+    if (ok) sendMoveDecision('approve');
+  });
+  // Decline button: tell the server not to move; nothing is sent to the robot.
+  $('move-decline').addEventListener('click', () => sendMoveDecision('decline'));
 
   // Display one finished result: the summary line, the 2D overlay and the 3D scene.
   async function loadResult(r) {
