@@ -28,6 +28,9 @@ AI use: This file was written by Claude (Anthropic; Claude Sonnet 5.5 via claude
 the author's gungnir.launch.py and Gungnir_Client.py and the author's requirement to start the client together
 with the simulation. Claude checked only that the file compiles (py_compile); it has NOT been run with ROS 2,
 Gazebo, the real robot or the camera. The author is responsible for reviewing and testing it.
+After the author's first test run showed the client rejecting --move-frame (the client on disk was an older
+version without the grasp-approval options), Claude changed the move options to be passed only when set, and
+added a check that reports an older client clearly. That edit was again only compile-checked.
 Reviewed and tested by: not yet reviewed or tested by the author.
 """
 
@@ -55,6 +58,20 @@ def _first_existing_file(paths):
         if path and os.path.isfile(path):
             return path
     return None
+
+
+def _client_has_option(script, option):
+    """True if the client script's text mentions the command-line option (e.g. "--move-frame").
+
+    A plain text search is enough here: the client defines its options with argparse, so an option it
+    supports appears in its source as a quoted string. This lets the launch file tell an older client
+    (before the grasp-approval / robot-move feature) from a current one without importing it.
+    """
+    try:
+        with open(script, "r", encoding="utf-8", errors="ignore") as handle:
+            return option in handle.read()
+    except OSError:
+        return False
 
 
 def _base_launch_file():
@@ -139,11 +156,25 @@ def client_setup(context, *args, **kwargs):
     if arg("grasp_server"):
         cmd.append(arg("grasp_server"))
     cmd += ["--port", arg("client_port")]
-    # The TF frame the grasp poses are in. It must match the frame_id the camera publishes (the base launch file
-    # gives the real camera "camera_depth_optical_frame") and must exist in the robot's TF tree.
-    cmd += ["--move-frame", arg("move_frame")]
-    # Path of the Cartesian path planner script the client starts after the user approves a move. If empty, the
-    # client uses its own default (Cartesian_Path_Planner.py next to the client).
+    # Robot-move options. Only clients with the grasp-approval feature understand them; an older client exits
+    # with "unrecognized arguments" if it is given one. So they are passed ONLY when the user set them.
+    has_move_options = _client_has_option(script, "--move-frame")
+    if (arg("move_frame") or arg("planner_script")) and not has_move_options:
+        # The user asked for a move option but this client cannot take it: stop here with a clear reason
+        # instead of letting the client die with an argparse usage message.
+        raise RuntimeError(f"move_frame:= / planner_script:= were given, but {script} has no --move-frame option: "
+                           "it is an older Gungnir client without the grasp-approval / robot-move feature. "
+                           "Update the client, or remove those two arguments.")
+    if not has_move_options:
+        messages.append(LogInfo(msg="[gungnir] NOTE: this Gungnir client has no robot-move feature (no --move-frame "
+                                    "option), so there will be no 'Proposed robot move' panel. Update "
+                                    f"{script} to get it."))
+    # The TF frame the grasp poses are in. It must match the frame_id the camera publishes and must exist in
+    # the robot's TF tree. Empty: the client's own default, which is "camera_depth_optical_frame".
+    if arg("move_frame"):
+        cmd += ["--move-frame", arg("move_frame")]
+    # Path of the Cartesian path planner script the client starts after the user approves a move. Empty: the
+    # client's own default (Cartesian_Path_Planner.py next to the client).
     if arg("planner_script"):
         cmd += ["--planner-script", os.path.abspath(os.path.expanduser(arg("planner_script")))]
     # Anything else for the client, e.g. client_args:="--min-score 0.3 --move-speed 0.1 --approval-timeout 60".
@@ -214,8 +245,9 @@ def generate_launch_description():
                               description="ContactGraspnet_Server address, e.g. 192.168.1.50 or 192.168.1.50:8765. "
                                           "Empty: the client uses $GUNGNIR_SERVER, then 127.0.0.1."),
         DeclareLaunchArgument("client_port", default_value="8000", description="Port of the client's web page."),
-        DeclareLaunchArgument("move_frame", default_value="camera_depth_optical_frame",
-                              description="TF frame the grasp poses are expressed in (the camera's frame_id)."),
+        DeclareLaunchArgument("move_frame", default_value="",
+                              description="TF frame the grasp poses are expressed in (the camera's frame_id). "
+                                          "Empty: the client's default, camera_depth_optical_frame."),
         DeclareLaunchArgument("planner_script", default_value="",
                               description="Path of the Cartesian path planner script. Empty: the client's default "
                                           "(Cartesian_Path_Planner.py next to the client)."),
