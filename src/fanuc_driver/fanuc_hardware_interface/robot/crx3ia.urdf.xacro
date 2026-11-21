@@ -1,0 +1,35 @@
+<?xml version="1.0" ?>
+<robot name="crx3ia" xmlns:xacro="http://wiki.ros.org/xacro">
+
+  <xacro:arg name="robot_ip" default="$(arg robot_ip)"/>
+  <xacro:arg name="rmi_port" default="16001"/>
+  <xacro:arg name="stream_motion_port" default="60015"/>
+  <xacro:arg name="gpio_configuration" default=""/>
+  <xacro:arg name="payload_schedule" default="1"/>
+  <xacro:arg name="out_cmd_interp_buff_target" default="8"/>
+  <xacro:arg name="force_sensor_type" default="1"/>
+  <xacro:arg name="use_mock" default="false"/>
+  <xacro:arg name="motion_control" default="1"/>
+  <xacro:arg name="origin_xyz" default="0 0 0"/>
+  <xacro:arg name="origin_rpy" default="0 0 0"/>
+  <xacro:arg name="parent_link" default="world"/>
+  <xacro:arg name="child_link" default="end_effector"/>
+  <xacro:arg name="prefix" default="" />
+  <xacro:arg name="encoding" default="UTF-8"/>
+
+  <xacro:include filename="$(find fanuc_crx_description)/urdf/crx3ia_urdf_macro.xacro"/>
+  <xacro:if value="$(arg use_mock)">
+    <xacro:include filename="$(find fanuc_hardware_interface)/config/crx_mock_ros2_control_macro.xacro"/>
+  </xacro:if>
+  <xacro:unless value="$(arg use_mock)">
+    <xacro:include filename="$(find fanuc_hardware_interface)/config/crx_physical_ros2_control_macro.xacro"/>
+  </xacro:unless>
+
+  <link name="$(arg parent_link)"/>
+  <link name="$(arg child_link)"/>
+  <xacro:crx3ia parent="$(arg parent_link)" child="$(arg child_link)" prefix="$(arg prefix)">
+    <origin xyz="$(arg origin_xyz)" rpy="$(arg origin_rpy)"/>
+  </xacro:crx3ia>
+
+  <xacro:crx_control name="crx3ia" prefix="$(arg prefix)"/>
+</robot>

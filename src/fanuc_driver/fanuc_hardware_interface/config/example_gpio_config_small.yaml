@@ -1,0 +1,15 @@
+gpio_topic_config:
+  io_state:
+    - type: F
+      start: 1
+      length: 8
+  io_cmd:
+    - type: F
+      start: 1
+      length: 8
+  num_reg_state:
+    - start: 1
+      length: 3
+  num_reg_cmd:
+    - start: 3
+      length: 3

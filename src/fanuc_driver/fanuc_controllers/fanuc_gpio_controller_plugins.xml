@@ -1,0 +1,17 @@
+<!--
+SPDX-FileCopyrightText: 2025, FANUC America Corporation
+SPDX-FileCopyrightText: 2025, FANUC CORPORATION
+SPDX-License-Identifier: Apache-2.0
+-->
+
+<library path="fanuc_gpio_controller">
+  <class
+      name="fanuc_controllers/FanucGPIOController"
+      type="fanuc_controllers::FanucGPIOController"
+      base_class_type="controller_interface::ControllerInterface"
+  >
+    <description>
+      A GPIO controller for FANUC robots that supports realtime and non-realtime topics and services.
+    </description>
+  </class>
+</library>

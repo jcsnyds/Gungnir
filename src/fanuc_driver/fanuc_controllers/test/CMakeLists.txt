@@ -1,0 +1,9 @@
+# SPDX-FileCopyrightText: 2025, FANUC America Corporation
+# SPDX-FileCopyrightText: 2025, FANUC CORPORATION
+#
+# SPDX-License-Identifier: Apache-2.0
+
+add_executable(fanuc_gpio_controller_test fanuc_gpio_controller_test.cpp)
+target_compile_definitions(fanuc_gpio_controller_test PRIVATE GPIO_CONFIG_FILE="${CMAKE_CURRENT_SOURCE_DIR}/test_config.yaml")
+target_link_libraries(fanuc_gpio_controller_test PRIVATE fanuc_gpio_controller GTest::gtest_main)
+gtest_discover_tests(fanuc_gpio_controller_test)

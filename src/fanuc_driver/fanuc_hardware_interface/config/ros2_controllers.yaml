@@ -1,0 +1,77 @@
+/**:
+  ros__parameters:
+    update_rate: 500 # Hz
+    joint_state_broadcaster:
+      type: joint_state_broadcaster/JointStateBroadcaster
+    joint_trajectory_controller:
+      type: fanuc_controllers/ScaledJointTrajectoryController
+    fanuc_gpio_controller:
+      type: fanuc_controllers/FanucGPIOController
+    forward_position_controller:
+      type: forward_command_controller/ForwardCommandController
+    fanuc_force_sensor_broadcaster:
+      type: fanuc_controllers/FanucForceSensorBroadcaster
+    force_torque_sensor_broadcaster:
+      type: force_torque_sensor_broadcaster/ForceTorqueSensorBroadcaster
+    fanuc_rmi_controller:
+      type: fanuc_controllers/FanucRMIController
+
+/**/fanuc_gpio_controller:
+  ros__parameters:
+    gpio_config_file_package: $(var gpio_config_package)
+    gpio_config_file_path: $(var gpio_config_path)
+
+/**/joint_trajectory_controller:
+  ros__parameters:
+    joints:
+      - "$(var prefix)J1"
+      - "$(var prefix)J2"
+      - "$(var prefix)J3"
+      - "$(var prefix)J4"
+      - "$(var prefix)J5"
+      - "$(var prefix)J6"
+    command_interfaces:
+      - position
+    state_interfaces:
+      - position
+    state_publish_rate: 100.0
+    action_monitor_rate: 20.0
+    allow_partial_joints_goal: false
+    allow_nonzero_velocity_at_trajectory_end: false # Set to false to suppress deprecation warning
+    constraints:
+      stopped_velocity_tolerance: 0.0
+      goal_time: 0.0
+      $(var prefix)J1:
+        goal: 0.05
+        trajectory: 0.25
+      $(var prefix)J2:
+        goal: 0.05
+        trajectory: 0.25
+      $(var prefix)J3:
+        goal: 0.05
+        trajectory: 0.25
+      $(var prefix)J4:
+        goal: 0.05
+        trajectory: 0.25
+      $(var prefix)J5:
+        goal: 0.05
+        trajectory: 0.25
+      $(var prefix)J6:
+        goal: 0.05
+        trajectory: 0.25
+
+/**/forward_position_controller:
+  ros__parameters:
+    joints:
+      - "$(var prefix)J1"
+      - "$(var prefix)J2"
+      - "$(var prefix)J3"
+      - "$(var prefix)J4"
+      - "$(var prefix)J5"
+      - "$(var prefix)J6"
+    interface_name: "position"
+
+/**/force_torque_sensor_broadcaster:
+  ros__parameters:
+    sensor_name: "ft_sensor"
+    frame_id: "$(var prefix)fanuc_flange"

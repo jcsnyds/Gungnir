@@ -1,0 +1,10 @@
+# Build artifacts
+build
+install
+log
+.cache
+
+# Editor specific files
+*.swp
+.idea/
+.vscode/

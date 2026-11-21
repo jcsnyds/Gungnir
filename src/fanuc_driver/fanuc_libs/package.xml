@@ -1,0 +1,28 @@
+<?xml version="1.0" ?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<!--
+SPDX-FileCopyrightText: 2025-2026, FANUC America Corporation
+SPDX-FileCopyrightText: 2025-2026, FANUC CORPORATION
+SPDX-License-Identifier: Apache-2.0
+-->
+<package format="3">
+  <name>fanuc_libs</name>
+  <version>1.6.0</version>
+  <description>
+    This package provides essential C++ libraries for interfacing with FANUC
+    robotic systems.
+  </description>
+  <maintainer email="fanuc-ros-maintainer@fanuc.co.jp">FANUC CORPORATION</maintainer>
+  <license>Apache-2.0</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <depend>eigen</depend>
+
+  <test_depend>ament_lint_auto</test_depend>
+  <test_depend>ament_lint_common</test_depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>
