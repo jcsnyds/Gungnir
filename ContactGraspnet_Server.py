@@ -593,7 +593,7 @@ def main(argv=None) -> int:
     # TensorFlow.
     threading.Thread(target=httpd.serve_forever, daemon=True, name="http").start()
     # Tell the user what to type on the camera computer.
-    print(f"[server] listening on port {args.port}. On the camera computer run:\n"
+    print(f"[server] listening on port {args.port}. Conta:\n"
           f"         python Gungnir_Client.py {lan_address()}" + (" --token <your token>" if args.token else ""), flush=True)
     if not args.token:
         print("[server] no token set: anyone who can reach this port can use the GPU (fine on a private LAN).", flush=True)
