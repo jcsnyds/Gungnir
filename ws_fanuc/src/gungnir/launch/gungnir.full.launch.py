@@ -49,7 +49,7 @@ from launch.substitutions import LaunchConfiguration
 # Name of the ROS 2 package that contains gungnir.launch.py (the same constant as in gungnir.launch.py).
 PKG = "gungnir"
 # File names under which the client may be saved. The second one is the name used in the author's project.
-CLIENT_FILE_NAMES = ("Gungnir_Client.py", "Gungnir_Client_ROS2.py")
+CLIENT_FILE_NAMES = "Gungnir_Client_ROS2.py"
 
 
 def _first_existing_file(paths):
