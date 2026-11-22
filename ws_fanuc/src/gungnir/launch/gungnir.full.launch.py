@@ -47,6 +47,13 @@ torch. The launch now also logs which script and interpreter it chose. Claude ch
 and by running it against stand-in launch modules and a temporary folder tree (symlink install, copied install,
 "~" path, explicit script, missing script, missing venv). It has NOT been run with ROS 2, Gazebo, the robot or
 the camera.
+Claude (Anthropic; Claude Sonnet 5.5 via claude.ai) update, November 2026, after the author's second run: the
+workspace built, but the launch failed on "sim_gripper_stub.py not found" (a file-permission problem fixed in setup.py,
+not here). Because the author's planner is saved as send_test_cmd.py one folder above scripts/ and not as
+Cartesian_Path_Planner.py next to the client, the launch now searches for the planner under both names (new constant
+PLANNER_FILE_NAMES) and passes it with --planner-script when planner_script:= is empty and the client supports it.
+Claude re-ran the scenario tests with stand-in launch modules after this edit; this file has NOT been run with ROS 2,
+Gazebo, the robot or the camera.
 Reviewed and tested by: not yet reviewed or tested by the author.
 """
 
@@ -70,6 +77,10 @@ CLIENT_FILE_NAMES = ("Gungnir_Client_ROS2.py", "Gungnir_Client.py")
 # os.path.expanduser() before it is tested: os.path.isfile("~/x") is False because no shell expands the "~" here.
 # If this path is absent on another machine, normal discovery continues below.
 DEFAULT_CLIENT_SCRIPT = "~/Gungnir/ws_fanuc/src/gungnir/scripts/Gungnir_Client_ROS2.py"
+# File names under which the Cartesian path planner script (started by the client after the user approves a move)
+# may be saved. The client's own default is the first name next to itself; in the author's workspace the planner is
+# the second name, one folder above scripts/ (ws_fanuc/src/gungnir/send_test_cmd.py).
+PLANNER_FILE_NAMES = ("Cartesian_Path_Planner.py", "send_test_cmd.py")
 
 
 def _first_existing_file(paths):
@@ -274,6 +285,23 @@ def client_setup(context, *args, **kwargs):
     # client's own default (Cartesian_Path_Planner.py next to the client).
     if arg("planner_script"):
         cmd += ["--planner-script", os.path.abspath(os.path.expanduser(arg("planner_script")))]
+    elif has_move_options:
+        # No planner given. The client's default is Cartesian_Path_Planner.py next to itself; if that file is
+        # missing, approving a move would fail later with a "planner not found" error. So look in the client's
+        # folder and the folder above it (the package root) for a planner under either known name.
+        next_to_client = os.path.join(project_dir, PLANNER_FILE_NAMES[0])
+        if not os.path.isfile(next_to_client):
+            planner = _first_existing_file([os.path.join(folder, name)
+                                            for folder in (project_dir, os.path.dirname(project_dir))
+                                            for name in PLANNER_FILE_NAMES])
+            if planner:
+                cmd += ["--planner-script", planner]
+                messages.append(LogInfo(msg=f"[gungnir] Cartesian path planner: {planner}"))
+            else:
+                messages.append(LogInfo(msg="[gungnir] WARNING: no Cartesian path planner script found (looked for "
+                                            f"{' / '.join(PLANNER_FILE_NAMES)} in {project_dir} and its parent "
+                                            "folder). Approving a move in the client will fail; pass "
+                                            "planner_script:=/path/to/planner.py"))
     # Anything else for the client, e.g. client_args:="--min-score 0.3 --move-speed 0.1 --approval-timeout 60".
     # (Do not add --swap-rb here if camera_swap_rb:=true already swaps the colours in l515_node.)
     cmd += shlex.split(arg("client_args"))
