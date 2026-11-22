@@ -9,6 +9,10 @@ project-local .venv/ or venv/, or creates .venv/ automatically when needed:
     python setup.py --skip-verify        # install without final smoke tests
     python setup.py --skip-tf-ops        # skip Jetson-only TensorFlow CUDA-op compilation
     python setup.py --skip-ros-setup      # skip automatic apt-based ROS setup (advanced)
+    python setup.py --skip-ros-build     # skip building the ROS 2 workspace (ws_fanuc) with colcon
+    python setup.py --skip-rosdep        # build the workspace without running rosdep first
+    python setup.py --clean-ros-build    # delete ws_fanuc/build, install and log, then build from scratch
+    python setup.py --force-ros-build    # build the workspace even on an ARM64 (Jetson) computer
 
 Segmentation in Gungnir_Client.py uses FastSAM (Ultralytics). Its weights are downloaded
 automatically the first time the client runs, so this installer has no checkpoint step; the
@@ -38,8 +42,15 @@ FastSAM, and no checkpoint download code existed), and extended verify_ros2_pyth
 runs a cv_bridge image conversion and reports the NumPy version, to catch a NumPy 2.x / apt
 cv_bridge mismatch. Claude checked only the syntax of that edit; it has not been run on a real
 machine.
-Reviewed and tested by: Ryan Poliquin (everything except the most recent Claude edit described
-above, which has not yet been reviewed or tested by the author).
+Claude (Anthropic; Claude Sonnet 5.5 via claude.ai), November 2026, added build_ros_workspace() and its helpers
+(ros_build_env(), run_build_step(), ensure_ros_build_tools(), verify_ros_workspace()) and the --skip-ros-build,
+--skip-rosdep, --clean-ros-build and --force-ros-build options. The installer now runs rosdep and
+`colcon build --symlink-install` on ws_fanuc with the project venv removed from PATH, then checks that ROS finds
+the gungnir package. Claude checked these additions with py_compile under Python 3.10 and 3.12 and ran them against
+stand-ins for apt, rosdep and colcon (command order, flags, failure handling, the venv PATH clean-up, and the
+main() branching). They have NOT been run with the real apt, rosdep, colcon or ROS 2, and the rest of setup.py was
+not re-run.
+Reviewed and tested by: Ryan Poliquin
 """
 
 from __future__ import annotations
@@ -75,6 +86,16 @@ ROS_SYSTEM_PACKAGES = ("python3-venv",)
 ROS_APT_REPOSITORY = "http://packages.ros.org/ros2/ubuntu"
 ROS_APT_KEY_URL = "https://raw.githubusercontent.com/ros/rosdistro/master/ros.key"
 ROS_APT_KEYRING = Path("/usr/share/keyrings/ros-archive-keyring.gpg")
+# The ROS 2 workspace that contains the gungnir package (launch files, the Gungnir client, the l515 camera node
+# and the FANUC/MoveIt packages). build_ros_workspace() builds it with colcon.
+ROS_WORKSPACE = ROOT / "ws_fanuc"
+# apt packages needed only to BUILD that workspace: colcon (the build tool), rosdep (installs the system packages
+# that each ROS package declares in its package.xml) and the C/C++ compiler toolchain.
+ROS_BUILD_PACKAGES = ("python3-colcon-common-extensions", "python3-rosdep", "build-essential")
+# `rosdep init` creates this file; if it exists, rosdep has already been initialised on this computer.
+ROSDEP_SOURCES_LIST = Path("/etc/ros/rosdep/sources.list.d/20-default.list")
+# The three folders colcon generates inside a workspace. --clean-ros-build deletes exactly these.
+ROS_GENERATED_DIRS = ("build", "install", "log")
 
 # CUDA 13.2 PyTorch builds. On JetPack 7.2 a plain `pip install torch` can give a build that
 # does not run on Orin, so Jetson installs come from this index and are verified by running a kernel.
@@ -946,6 +967,11 @@ def main() -> int:
     parser.add_argument("--skip-verify", action="store_true", help="Skip final smoke tests.")
     parser.add_argument("--skip-tf-ops", action="store_true", help="Skip building Contact-GraspNet TensorFlow custom operators (Jetson only).")
     parser.add_argument("--skip-ros-setup", action="store_true", help="Skip ROS 2 apt installation and ROS Python checks.")
+    # --- ROS 2 workspace build options (used by build_ros_workspace) ---
+    parser.add_argument("--skip-ros-build", action="store_true", help="Skip building the ROS 2 workspace (ws_fanuc) with colcon.")
+    parser.add_argument("--skip-rosdep", action="store_true", help="Build the ROS 2 workspace without first installing its dependencies with rosdep.")
+    parser.add_argument("--clean-ros-build", action="store_true", help="Delete ws_fanuc/build, install and log before building (a from-scratch build).")
+    parser.add_argument("--force-ros-build", action="store_true", help="Build the ROS 2 workspace even on an ARM64/Jetson computer (skipped there by default).")
     args, realsense_args = parser.parse_known_args()
 
     if IS_LINUX and not args.skip_ros_setup:
@@ -1002,6 +1028,15 @@ def main() -> int:
 
     if IS_LINUX and not args.skip_ros_setup:
         verify_ros2_python()
+        # Build the ROS 2 workspace (ws_fanuc) so that `ros2 launch gungnir ...` works with no manual colcon step.
+        if args.skip_ros_build:
+            log("Skipping the ROS 2 workspace build (--skip-ros-build)")
+        elif AARCH64_LINUX and not args.force_ros_build:
+            # An ARM64 Linux computer is the Jetson GPU server; the ROS client stack runs on the camera computer.
+            log("Skipping the ROS 2 workspace build on this ARM64 (Jetson) computer: the client stack runs on "
+                "the camera computer. Use --force-ros-build to build here anyway.")
+        else:
+            build_ros_workspace(clean=args.clean_ros_build, use_rosdep=not args.skip_rosdep)
 
     return 0 if args.skip_verify else verify()
 
