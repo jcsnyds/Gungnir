@@ -1,4 +1,6 @@
 <?xml version="1.0"?>
+<!-- AI USE: Section 6 (L515 mount pose and housing offset) was computed with Claude (Anthropic) from
+     the Onshape model, the L515 datasheet and the camera's factory extrinsics; values verified by the author. -->
 <robot name="crx5ia_gripper_camera" xmlns:xacro="http://ros.org">
 
   <!-- 1. Include the official FANUC CRX-5iA macro -->
@@ -61,29 +63,45 @@
   </joint>
 
   <!-- ===================================================================== -->
-  <!-- 6. Intel RealSense L515 Depth Camera (relative to tool0)              -->
-  <!--    Offset in tool0: 243.924 mm along the tool axis (+X), 62.525 mm along +Z   -->
+  <!-- 6. Intel RealSense L515 (relative to tool0)                            -->
+  <!--    camera_link = the L515 RGB camera's optical centre (x forward).    -->
+  <!--    Depth is aligned to colour in l515.py, so every grasp is expressed -->
+  <!--    in the RGB frame; camera_depth_optical_frame below therefore marks -->
+  <!--    the RGB lens even though its name says "depth".                    -->
+  <!--                                                                     -->
+  <!--    How the numbers were derived (2026-11-22, with AI assistance):     -->
+  <!--      * Depth origin from Onshape ("DEPTH FRAME" mate connector on the -->
+  <!--        IR transmitter, 4.5 mm behind the glass per the L515 datasheet -->
+  <!--        s3.4), measured from the gripper flange connector:             -->
+  <!--        243.424 mm along the tool axis, 63.775 mm toward the camera.   -->
+  <!--      * Plus the factory depth-to-colour extrinsics read from this     -->
+  <!--        camera with l515_extrinsics.py: RGB centre is +2.809 mm        -->
+  <!--        forward, 1.741 mm to image-right, 13.691 mm image-up of the    -->
+  <!--        depth origin, rotated by rpy (0.42, -1.71, -0.21) deg.         -->
+  <!--    Re-run l515_extrinsics.py if the camera is ever swapped.           -->
   <!-- ===================================================================== -->
   <joint name="l515_mount_joint" type="fixed">
     <parent link="tool0" />
     <child link="camera_link" />
-    <!-- Adjust rpy (in radians) to match the physical orientation of your camera -->
-    <origin xyz=" 0.243924 0.000 0.062525" rpy="0 0 0" />
+    <!-- xyz: metres in tool0 (x = tool axis, z = toward the camera side). rpy: factory RGB tilt. -->
+    <origin xyz="0.246233 -0.001741 0.077466" rpy="0.007408 -0.029885 -0.003665" />
   </joint>
 
   <link name="camera_link">
     <visual>
-      <!-- Cylinder rotated so flat face points forward along +X of camera_link -->
-      <origin xyz="0 0 0" rpy="0 ${pi/2} 0" />
+      <!-- Housing centre sits 11.8 mm behind and 14.6 mm below the RGB lens (13 mm behind the glass,
+           on the housing axis). Cylinder turned so its flat face points along +X. -->
+      <origin xyz="-0.011757 0.001591 -0.014608" rpy="0 ${pi/2} 0" />
       <geometry>
-        <cylinder radius="0.0305" length="0.0254" />
+        <cylinder radius="0.0305" length="0.026" />
       </geometry>
       <material name="l515_black">
         <color rgba="0.1 0.1 0.1 0.25" />
       </material>
     </visual>
     <collision>
-      <origin xyz="0 0 0" rpy="0 ${pi/2} 0" />
+      <!-- Same placement as the visual so MoveIt sees the housing where it really is. -->
+      <origin xyz="-0.011757 0.001591 -0.014608" rpy="0 ${pi/2} 0" />
       <geometry>
         <cylinder radius="0.0305" length="0.026" />
       </geometry>
