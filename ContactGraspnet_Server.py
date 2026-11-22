@@ -55,7 +55,14 @@ stdin/stdout pipe protocol with the HTTP interface so it can run on a different 
 Gungnir_Client.py; line-by-line comments restored in a later pass (comments only: the executable code is
 identical to the version the author uploaded in November 2026). Tested only against a fake model (HTTP, error and restart paths), not with
 TensorFlow or the real hardware; the GraspModel TensorFlow code was not run by Claude.
-Reviewed and tested by: Ryan Poliquin
+A later edit by Claude (Anthropic; Claude Sonnet 5.5 via claude.ai), November 2026, changed only the start-up
+hint printed by main(): it now shows the `ros2 launch gungnir gungnir.full.launch.py ... grasp_server:=<address>`
+command for the camera computer (instead of `python Gungnir_Client.py <address>`), includes the port in the
+address when --port is not the default, and mentions $GUNGNIR_TOKEN when a token is set. That edit also
+completed a truncated sentence ("Conta:") in the old hint. Claude checked only that the file compiles and ran
+the new hint through a stand-in for main()'s printing; it has not been run with TensorFlow or on the real hardware.
+Reviewed and tested by: Ryan Poliquin (everything except the start-up-hint edit described above, which has not
+yet been reviewed or tested by the author).
 """
 
 # Store type annotations as text instead of evaluating them when the file is loaded, so annotations such as
@@ -220,6 +227,31 @@ def lan_address() -> str:
             return s.getsockname()[0]  # the local address that would be used
     except OSError:
         return "<this-computer's-ip>"
+
+
+def client_hint(address: str, port: int, has_token: bool) -> str:
+    """The start-up hint: what to type on the camera computer to connect to this server.
+
+    address:   this computer's LAN address (from lan_address()).
+    port:      the TCP port this server listens on.
+    has_token: True if the server requires a token (the token itself is never printed).
+    """
+    # The client assumes DEFAULT_PORT unless the address says otherwise, so a custom port must be part of the
+    # address ("192.168.1.50:9000"); the default port is left out to keep the command short.
+    server = address if port == DEFAULT_PORT else f"{address}:{port}"
+    # The launch command, written once so the real-robot and simulation lines cannot drift apart.
+    launch = f"ros2 launch gungnir gungnir.full.launch.py grasp_server:={server}"
+    lines = [
+        f"[server] listening on port {port}. On the camera computer (ROS 2 workspace sourced) run:",
+        f"         {launch} mode:=real",
+        f"         (to test in simulation instead:  {launch} mode:=sim)",
+    ]
+    if has_token:
+        # The client reads the token from the environment, which the launch file passes on to it. It is
+        # deliberately not a launch argument: command lines are visible to every user through `ps`.
+        lines.append("[server] a token is set: on the camera computer run  export GUNGNIR_TOKEN=<your token>  "
+                     "before the command above.")
+    return "\n".join(lines)
 
 
 # ======================================================================================
@@ -592,9 +624,9 @@ def main(argv=None) -> int:
     # Serve requests in a background thread (each request gets its own thread); the main thread stays free for
     # TensorFlow.
     threading.Thread(target=httpd.serve_forever, daemon=True, name="http").start()
-    # Tell the user what to type on the camera computer.
-    print(f"[server] listening on port {args.port}. Conta:\n"
-          f"         python Gungnir_Client.py {lan_address()}" + (" --token <your token>" if args.token else ""), flush=True)
+    # Tell the user what to type on the camera computer: the ros2 launch command that starts the robot stack and
+    # the Gungnir client together, pointed at this server (see client_hint() above).
+    print(client_hint(lan_address(), args.port, bool(args.token)), flush=True)
     if not args.token:
         print("[server] no token set: anyone who can reach this port can use the GPU (fine on a private LAN).", flush=True)
 
