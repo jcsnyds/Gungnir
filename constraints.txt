@@ -6,3 +6,4 @@
 # (NumPy version range shared by all pip calls).
 
 numpy>=2,<2.6
+numpy<2 ; platform_machine == "x86_64"   # Ubuntu's apt cv_bridge (ROS 2 Humble) is built against NumPy 1.x
