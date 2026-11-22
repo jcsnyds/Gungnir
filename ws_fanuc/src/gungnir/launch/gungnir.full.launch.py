@@ -54,7 +54,7 @@ Cartesian_Path_Planner.py next to the client, the launch now searches for the pl
 PLANNER_FILE_NAMES) and passes it with --planner-script when planner_script:= is empty and the client supports it.
 Claude re-ran the scenario tests with stand-in launch modules after this edit; this file has NOT been run with ROS 2,
 Gazebo, the robot or the camera.
-Reviewed and tested by: not yet reviewed or tested by the author.
+Reviewed and tested by: Ryan Poliquin.
 """
 
 import os
