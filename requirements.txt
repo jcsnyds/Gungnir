@@ -12,7 +12,8 @@
 # accepting the system's old packages.
 # Reviewed and tested by: Ryan Poliquin
 
-numpy>=2
+numpy>=2 ; sys_platform != "linux" or platform_machine == "aarch64"
+numpy>=1.26,<2 ; sys_platform == "linux" and platform_machine != "aarch64"
 scipy>=1.14
 pandas>=2.2
 matplotlib>=3.8

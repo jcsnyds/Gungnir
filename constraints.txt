@@ -5,5 +5,5 @@
 # AI use: Written by Claude (Anthropic; Claude Sonnet 5.5 via claude.ai), October 2026
 # (NumPy version range shared by all pip calls).
 
-numpy>=2,<2.6
-numpy<2 ; platform_machine == "x86_64"   # Ubuntu's apt cv_bridge (ROS 2 Humble) is built against NumPy 1.x
+numpy>=2,<2.6 ; sys_platform != "linux" or platform_machine == "aarch64"
+numpy<2 ; sys_platform == "linux" and platform_machine != "aarch64"
