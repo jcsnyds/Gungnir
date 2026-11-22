@@ -54,7 +54,7 @@ PKG = "gungnir"
 CLIENT_FILE_NAMES = ("Gungnir_Client_ROS2.py", "Gungnir_Client.py")
 # Preferred source-tree location on the user's WSL Ubuntu installation.
 # If this path is absent on another machine, normal discovery continues below.
-DEFAULT_CLIENT_SCRIPT = "/home/rpoli/Gungnir/ws_fanuc/src/gungnir/scripts/Gungnir_Client_ROS2.py"
+DEFAULT_CLIENT_SCRIPT = "~/Gungnir/ws_fanuc/src/gungnir/scripts/Gungnir_Client_ROS2.py"
 
 
 def _first_existing_file(paths):
