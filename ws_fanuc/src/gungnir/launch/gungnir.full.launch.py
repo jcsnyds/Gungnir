@@ -1,4 +1,3 @@
-
 """gungnir.full.launch.py: the complete Gungnir stack = gungnir.launch.py + the Gungnir client web UI.
 
     ros2 launch gungnir gungnir.full.launch.py mode:=sim camera:=sim grasp_server:=192.168.1.50
@@ -18,6 +17,8 @@ environment (torch, ultralytics, flask, plotly ...), which the system python3 th
 have. ExecuteProcess lets us choose the interpreter explicitly. The client is still a ROS 2 node (it
 subscribes to /camera/depth/image_rect_raw, /camera/color/image_raw and /camera/color/camera_info), and the
 planner it launches after the user approves a move talks to the move_group started by gungnir.launch.py.
+Because the interpreter is chosen explicitly (the .venv/bin/python path), the virtual environment does NOT have
+to be activated in the terminal that runs `ros2 launch`.
 
 Things that must be true for the client to be useful (the launch file cannot check them):
   * A camera is running: camera:=sim (with mode:=sim) or camera:=real. With the default mode:=mock there is
@@ -33,6 +34,19 @@ After the author's first test run showed the client rejecting --move-frame (the 
 version without the grasp-approval options), Claude changed the move options to be passed only when set, and
 added a check that reports an older client clearly. That edit was again only compile-checked.
 ChatGPT (OpenAI) update, November 2026: configured the WSL source-tree path "/home/rpoli/Gungnir/ws_fanuc/src/gungnir/scripts/Gungnir_Client_ROS2.py" as the first automatic client-script discovery candidate. Existing client_script:= and GUNGNIR_CLIENT_SCRIPT overrides remain available, and the normal package/current-directory fallbacks are retained. This update has not been runtime-tested with ROS 2.
+Claude (Anthropic; Claude Sonnet 5.5 via claude.ai) update, November 2026, after the author's run printed
+"Gungnir client script not found". Three changes: (1) the WSL path above starts with "~", which os.path.isfile()
+does not expand, so it could never match; it now goes through os.path.expanduser(). (2) New function
+_workspace_script_dirs() finds the client in the source tree (src/gungnir/scripts) from the launch file's real
+path (symlink install) or from the package's install prefix (plain colcon build); those candidates now come
+BEFORE the WSL path and before the installed copies, so the order described in the ChatGPT paragraph above no
+longer holds. (3) New function _find_venv_python() looks for .venv/ or venv/ in the client script's folder and
+its parent folders up to the repository root, because setup.py creates .venv/ in the repository root while the
+script is four folders deeper; without this the client would start with the system python3 and fail to import
+torch. The launch now also logs which script and interpreter it chose. Claude checked this file with py_compile
+and by running it against stand-in launch modules and a temporary folder tree (symlink install, copied install,
+"~" path, explicit script, missing script, missing venv). It has NOT been run with ROS 2, Gazebo, the robot or
+the camera.
 Reviewed and tested by: not yet reviewed or tested by the author.
 """
 
@@ -52,7 +66,8 @@ from launch.substitutions import LaunchConfiguration
 PKG = "gungnir"
 # File names under which the client may be saved. The second one is the name used in the author's project.
 CLIENT_FILE_NAMES = ("Gungnir_Client_ROS2.py", "Gungnir_Client.py")
-# Preferred source-tree location on the user's WSL Ubuntu installation.
+# Preferred source-tree location on the user's WSL Ubuntu installation. It starts with "~", so it MUST go through
+# os.path.expanduser() before it is tested: os.path.isfile("~/x") is False because no shell expands the "~" here.
 # If this path is absent on another machine, normal discovery continues below.
 DEFAULT_CLIENT_SCRIPT = "~/Gungnir/ws_fanuc/src/gungnir/scripts/Gungnir_Client_ROS2.py"
 
@@ -77,6 +92,71 @@ def _client_has_option(script, option):
             return option in handle.read()
     except OSError:
         return False
+
+
+def _workspace_script_dirs():
+    """Folders in the SOURCE tree (<workspace>/src/gungnir/scripts) where the client script may live.
+
+    The client script is not necessarily installed into the package by colcon (it is not, in the author's
+    workspace), so looking only in install/gungnir/lib and install/gungnir/share finds nothing. The source
+    tree is found in two ways, because colcon can install this launch file in two ways:
+
+      * `colcon build --symlink-install`: the installed launch file is a symbolic link into the source tree.
+        os.path.realpath() follows the link, so the REAL location of this file is
+        <workspace>/src/gungnir/launch/ and its sibling folder is <workspace>/src/gungnir/scripts/.
+      * plain `colcon build`: the installed launch file is a COPY that links back to nothing. But the package
+        is installed at <workspace>/install/gungnir, so the workspace folder can be worked out from the
+        package's install prefix, and the scripts folder is <workspace>/src/gungnir/scripts/.
+    """
+    folders = []
+
+    # Route 1: the real (symlink-resolved) folder of this launch file, then its sibling "scripts" folder.
+    launch_dir = os.path.dirname(os.path.realpath(__file__))
+    folders.append(os.path.join(os.path.dirname(launch_dir), "scripts"))
+
+    # Route 2: derive the workspace folder from where colcon installed the package.
+    prefix = os.path.normpath(get_package_prefix(PKG))
+    if os.path.basename(prefix) == PKG:
+        # Default "isolated" layout: the prefix is <workspace>/install/gungnir.
+        workspace = os.path.dirname(os.path.dirname(prefix))
+    else:
+        # "Merged" layout (colcon build --merge-install): the prefix is <workspace>/install.
+        workspace = os.path.dirname(prefix)
+    folders.append(os.path.join(workspace, "src", PKG, "scripts"))
+
+    # Both routes usually give the same folder; keep each once, in order.
+    return list(dict.fromkeys(folders))
+
+
+def _find_venv_python(start_dir):
+    """Find the project's virtual-environment interpreter (.venv/bin/python or venv/bin/python).
+
+    Starts in `start_dir` (the client script's folder) and walks UP through its parent folders. This is needed
+    because setup.py creates .venv/ in the repository root (~/Gungnir) while the client script lives four
+    folders deeper (ws_fanuc/src/gungnir/scripts), so a search limited to the script's own folder never finds it.
+
+    The walk stops after the repository root (the first folder that contains .git) so that an unrelated
+    venv further up (for example ~/venv) is not picked up by accident, and never climbs more than six levels.
+    Returns the path as a string, or None if there is no virtual environment.
+
+    The returned path is deliberately NOT resolved with realpath: a venv's python is a symlink to the system
+    python, and only the unresolved path lets Python find the venv's pyvenv.cfg and therefore its packages.
+    """
+    folder = os.path.abspath(start_dir)
+    for _ in range(7):  # the starting folder plus up to six parents
+        for name in (".venv", "venv"):
+            candidate = os.path.join(folder, name, "bin", "python")
+            # isfile() follows the symlink, so a working venv python counts as a file.
+            if os.path.isfile(candidate):
+                return candidate
+        # A .git entry marks the repository root: this was the last folder that is part of the project.
+        if os.path.exists(os.path.join(folder, ".git")):
+            break
+        parent = os.path.dirname(folder)
+        if parent == folder:  # reached the top of the file system
+            break
+        folder = parent
+    return None
 
 
 def _base_launch_file():
@@ -122,18 +202,26 @@ def client_setup(context, *args, **kwargs):
             raise RuntimeError(f"Client script not found: {script} (from client_script:= or $GUNGNIR_CLIENT_SCRIPT)")
     else:
         # No explicit choice: look in the usual places, in this order.
-        search_dirs = (pkg_lib, pkg_share, os.path.join(pkg_share, "scripts"), os.getcwd())
-        # Check the user's WSL source-tree path first; skip it automatically on other machines.
-        candidates = [DEFAULT_CLIENT_SCRIPT]
-        candidates += [os.path.join(folder, name) for folder in search_dirs for name in CLIENT_FILE_NAMES]
+        install_dirs = (pkg_lib, pkg_share, os.path.join(pkg_share, "scripts"), os.getcwd())
+        candidates = []
+        # 1. The source tree the package was built from. Preferred over installed copies because the client
+        #    writes its output/ folder and looks for Cartesian_Path_Planner.py next to ITSELF, which should be
+        #    the source folder, not a build artefact.
+        candidates += [os.path.join(folder, name) for folder in _workspace_script_dirs() for name in CLIENT_FILE_NAMES]
+        # 2. The author's WSL path. expanduser() turns "~" into the home folder; without it this never matched.
+        candidates.append(os.path.expanduser(DEFAULT_CLIENT_SCRIPT))
+        # 3. Where colcon may have installed the script, then the current directory.
+        candidates += [os.path.join(folder, name) for folder in install_dirs for name in CLIENT_FILE_NAMES]
+        # Keep each path once (the routes above often overlap); this also keeps the error message short.
+        candidates = list(dict.fromkeys(candidates))
         script = _first_existing_file(candidates)
         if script is None:
             raise RuntimeError("Gungnir client script not found. Pass client_script:=/path/to/Gungnir_Client.py "
                                "(or set $GUNGNIR_CLIENT_SCRIPT). Looked in:\n  " + "\n  ".join(candidates))
 
-    # The project folder = the folder holding the REAL file (realpath follows symlinks, so a symlink-installed
-    # script resolves back to the source tree). The client's .venv/ lives there, and the client resolves its
-    # own output folder and default planner script relative to this folder.
+    # The folder holding the REAL file (realpath follows symlinks, so a symlink-installed script resolves back
+    # to the source tree). The client runs from here: it resolves its own output folder and its default planner
+    # script relative to this folder, and the FastSAM weights are downloaded to / looked up in it.
     project_dir = os.path.dirname(os.path.realpath(script))
 
     # ---- 2. Which Python interpreter? --------------------------------------------------------------------
@@ -141,19 +229,21 @@ def client_setup(context, *args, **kwargs):
     if explicit_python:
         python = os.path.expanduser(explicit_python)
     else:
-        # The project's virtual environment created by setup.py. The path is deliberately NOT resolved with
-        # realpath: a venv's python is a symlink to the system python, and only the unresolved path lets Python
-        # find the venv's pyvenv.cfg and therefore its installed packages.
-        python = _first_existing_file([os.path.join(project_dir, ".venv", "bin", "python"),
-                                       os.path.join(project_dir, "venv", "bin", "python")])
+        # The project's virtual environment created by setup.py. It is in the REPOSITORY ROOT, several folders
+        # above the client script, so the search walks upward (see _find_venv_python). Nothing needs to be
+        # "activated": starting the interpreter by its path inside the venv is enough for Python to use the
+        # venv's packages.
+        python = _find_venv_python(project_dir)
         if python is None:
             # Last resort: the interpreter running this launch file (the sourced system python3). It probably
             # lacks torch/ultralytics/flask, so tell the user instead of failing mysteriously later.
             python = sys.executable
             messages.append(LogInfo(msg=(
-                f"[gungnir] WARNING: no .venv/ or venv/ found in {project_dir}; starting the client with "
-                f"{python}. If it fails to import torch/ultralytics/flask, run setup.py or pass "
-                "client_python:=/path/to/venv/bin/python")))
+                f"[gungnir] WARNING: no .venv/ or venv/ found in {project_dir} or the folders above it (up to "
+                f"the repository root); starting the client with {python}. If it fails to import "
+                "torch/ultralytics/flask, run setup.py or pass client_python:=/path/to/venv/bin/python")))
+    # Always say which script and interpreter were chosen: the first thing to check when something is off.
+    messages.append(LogInfo(msg=f"[gungnir] Client script: {script}\n[gungnir] Client python: {python}"))
 
     # ---- 3. The client's command line --------------------------------------------------------------------
     cmd = [python, script]
@@ -192,8 +282,8 @@ def client_setup(context, *args, **kwargs):
     client = ExecuteProcess(
         cmd=cmd,
         name="gungnir_client",
-        # Run from the project folder, exactly like typing `python Gungnir_Client.py` there. In particular the
-        # FastSAM weights (FastSAM-s.pt) are downloaded to / looked up in the working directory.
+        # Run from the script's folder, exactly like typing `python Gungnir_Client_ROS2.py` there. In particular
+        # the FastSAM weights (FastSAM-s.pt) are downloaded to / looked up in the working directory.
         cwd=project_dir,
         output="screen",
         # A pseudo-terminal makes Python flush its output line by line, so the log appears live.
@@ -244,11 +334,13 @@ def generate_launch_description():
                               description="Start the Gungnir client web UI (false: behave like gungnir.launch.py)."),
         DeclareLaunchArgument("client_script", default_value="",
                               description="Path of Gungnir_Client_ROS2.py. Empty: $GUNGNIR_CLIENT_SCRIPT, then the "
-                                          "configured WSL source-tree path, package lib/ and share/ folders, "
-                                          "and the current directory."),
+                                          "source tree the package was built from (src/gungnir/scripts), the "
+                                          "configured WSL path, the package lib/ and share/ folders, and the "
+                                          "current directory."),
         DeclareLaunchArgument("client_python", default_value="",
                               description="Python interpreter for the client. Empty: $GUNGNIR_PYTHON, then the "
-                                          ".venv/ or venv/ next to the client script, then the launch's own python3."),
+                                          ".venv/ or venv/ in the client script's folder or the project folders "
+                                          "above it, then the launch's own python3."),
         DeclareLaunchArgument("grasp_server", default_value="",
                               description="ContactGraspnet_Server address, e.g. 192.168.1.50 or 192.168.1.50:8765. "
                                           "Empty: the client uses $GUNGNIR_SERVER, then 127.0.0.1."),

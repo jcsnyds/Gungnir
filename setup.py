@@ -339,6 +339,162 @@ print('cv_bridge image conversion: OK')
             "constraints-linux.txt (or requirements-linux.txt) and run setup.py again."
         )
 
+# ======================================================================================================
+# AI use: written by Claude (Anthropic; Claude Sonnet 5.5 via claude.ai), November 2026, at the author's request
+# to make setup.py build the ROS 2 workspace ws_fanuc automatically. Claude checked it with py_compile under
+# Python 3.10 and 3.12 and ran it against stand-ins for apt, rosdep and colcon (command order, flags, failure
+# handling, removal of the venv from PATH). It has NOT been run with the real apt, rosdep, colcon or ROS 2.
+# Reviewed and tested by: not yet reviewed or tested by the author.
+# ======================================================================================================
+
+
+def ros_build_env() -> dict:
+    """Return the environment for rosdep and colcon: the sourced ROS 2 environment WITHOUT the project venv.
+
+    Why the venv must be hidden: setup.py runs inside .venv/, so .venv/bin is first on PATH. If colcon ran with
+    that PATH, CMake and the `#!/usr/bin/env python3` line of every Python script the build installs would
+    resolve to the venv's interpreter instead of /usr/bin/python3. ROS 2 binary packages are built for the
+    system Python, so the workspace has to be built with the system Python on PATH.
+    """
+    env = os.environ.copy()
+    # The venv bin/ folders to remove from PATH. sys.prefix differs from sys.base_prefix only inside a venv, so
+    # that is the venv this process runs in; VIRTUAL_ENV is the venv the user's shell activated, if any.
+    venv_bins = set()
+    if sys.prefix != sys.base_prefix:
+        venv_bins.add(os.path.realpath(os.path.join(sys.prefix, "bin")))
+    activated = env.pop("VIRTUAL_ENV", None)  # pop() also removes the variable from the child's environment
+    if activated:
+        venv_bins.add(os.path.realpath(os.path.join(activated, "bin")))
+    # Keep every PATH entry except those folders. realpath() makes "/a/.venv/bin" and "/a/./.venv/bin" equal.
+    kept = [entry for entry in env.get("PATH", "").split(os.pathsep)
+            if entry and os.path.realpath(entry) not in venv_bins]
+    env["PATH"] = os.pathsep.join(kept)
+    # PYTHONHOME would force one interpreter's library folder onto every Python child process; never wanted.
+    env.pop("PYTHONHOME", None)
+    return env
+
+
+def run_build_step(description: str, hint: str, command: list, **kwargs) -> None:
+    """Run one build command. If it fails, stop the whole installer with a message saying what to try next."""
+    try:
+        run(command, **kwargs)  # run() prints the command first, so the log shows exactly what was executed
+    except subprocess.CalledProcessError as exc:
+        sys.exit(f"\n{description} failed (exit code {exc.returncode}). {hint}")
+
+
+def ensure_ros_build_tools(codename: str) -> None:
+    """Install colcon, rosdep and a compiler through apt, but only the ones that are missing."""
+    missing = [package for package in ROS_BUILD_PACKAGES if not deb_package_installed(package)]
+    if not missing:
+        return
+    log(f"Installing ROS 2 build tools: {', '.join(missing)}")
+    # colcon is served by the ROS apt repository; this call returns at once if that repository is already set up.
+    configure_ros_apt_repository(codename)
+    # Refresh the package lists first: on a fresh Ubuntu/WSL image they are often empty or stale.
+    run_privileged(["apt-get", "update"])
+    run_privileged(["apt-get", "install", "-y", *missing])
+
+
+def verify_ros_workspace(ros_setup: Path, env: dict) -> None:
+    """After the build: check ROS can find the gungnir package, and that the launch file follows the source.
+
+    ros_setup: the /opt/ros/<distro>/setup.bash file. env: the environment from ros_build_env().
+    """
+    install_setup = ROS_WORKSPACE / "install" / "setup.bash"
+    if not install_setup.is_file():
+        sys.exit(f"colcon finished, but {install_setup} was not created, so the workspace cannot be sourced.")
+    log("Checking the built workspace")
+    # A new bash sources the two setup files in the order a user would, then asks ROS where `gungnir` is.
+    # (Sourcing happens in bash because setup.bash files are shell scripts; Python cannot source them.)
+    shell_command = (f"source {shlex.quote(str(ros_setup))} && source {shlex.quote(str(install_setup))} "
+                     "&& ros2 pkg prefix gungnir")
+    bash = shutil.which("bash") or "/bin/bash"
+    result = subprocess.run([bash, "-c", shell_command], env=env, capture_output=True, text=True)
+    if result.returncode != 0:
+        print(result.stderr, file=sys.stderr, flush=True)
+        sys.exit("ROS cannot find the package 'gungnir' after the build. Check that "
+                 f"{ROS_WORKSPACE / 'src' / 'gungnir' / 'package.xml'} exists and that colcon listed gungnir "
+                 "in its summary above.")
+    # `ros2 pkg prefix` prints the install folder of the package, e.g. .../ws_fanuc/install/gungnir.
+    prefix = Path(result.stdout.strip().splitlines()[-1])
+    print(f"    ros2 pkg prefix gungnir: {prefix}")
+
+    # The launch file that `ros2 launch` runs is the installed one. With --symlink-install it is a link to the
+    # file in src/, so edits take effect at once. A plain copy goes stale after every edit until the next build:
+    # this is what made an old launch file run in the author's first test.
+    installed_launch = prefix / "share" / "gungnir" / "launch" / "gungnir.full.launch.py"
+    source_launch = ROS_WORKSPACE / "src" / "gungnir" / "launch" / "gungnir.full.launch.py"
+    if installed_launch.is_file() and source_launch.is_file():
+        if installed_launch.resolve() == source_launch.resolve():
+            print("    gungnir.full.launch.py: installed as a link to src/ (edits apply without rebuilding): OK")
+        else:
+            print("    WARNING: the installed gungnir.full.launch.py is a COPY, not a link to src/, so edits to "
+                  "it are ignored until the next colcon build. Run setup.py again with --clean-ros-build.")
+    else:
+        print("    NOTE: gungnir.full.launch.py was not found both in src/ and under share/gungnir/launch/; "
+              "check that the package installs its launch/ folder.")
+    # The launch file looks for the client in src/gungnir/scripts, so report whether it is there.
+    client = ROS_WORKSPACE / "src" / "gungnir" / "scripts" / "Gungnir_Client_ROS2.py"
+    print(f"    Gungnir client script: {'found' if client.is_file() else 'NOT FOUND'} ({client})")
+
+
+def build_ros_workspace(clean: bool, use_rosdep: bool) -> None:
+    """Build ws_fanuc with colcon so that `ros2 launch gungnir gungnir.full.launch.py ...` works afterwards.
+
+    clean:      delete the workspace's build/, install/ and log/ folders first (a from-scratch build).
+    use_rosdep: install the system packages the workspace's package.xml files declare, before building.
+    """
+    codename, distro = selected_ros_distro()  # e.g. ("jammy", "humble"); stops with a message if unsupported
+    ros_setup = Path("/opt/ros") / distro / "setup.bash"
+    if not (ROS_WORKSPACE / "src").is_dir():
+        sys.exit(f"ROS workspace sources not found: {ROS_WORKSPACE / 'src'}. Run setup.py from the repository "
+                 "root, or pass --skip-ros-build.")
+
+    log(f"Building the ROS 2 {distro} workspace {ROS_WORKSPACE}")
+    ensure_ros_build_tools(codename)
+    env = ros_build_env()
+    # Building a workspace while ITS OWN install/ is already sourced can pick up stale packages. Warn, don't stop.
+    if str(ROS_WORKSPACE / "install") in env.get("AMENT_PREFIX_PATH", ""):
+        print("WARNING: this terminal already has ws_fanuc/install sourced. For a clean build, open a new "
+              "terminal where only /opt/ros/<distro>/setup.bash was sourced, then run setup.py again.")
+
+    if clean:
+        # Delete only the three folders colcon generates, never anything else in the workspace.
+        for name in ROS_GENERATED_DIRS:
+            target = ROS_WORKSPACE / name
+            if target.is_dir():
+                print(f"    Deleting {target}")
+                shutil.rmtree(target)
+
+    if use_rosdep:
+        # One-time setup of rosdep on this computer; it writes into /etc, hence the administrator rights.
+        if not ROSDEP_SOURCES_LIST.is_file():
+            run_build_step("`rosdep init`", "Check the internet connection (it downloads from GitHub) and try again.",
+                           [*privileged_prefix(), "rosdep", "init"])
+        # Download the current package database. This must run as the normal user, NOT through sudo.
+        run_build_step("`rosdep update`", "Check the internet connection and try again.",
+                       ["rosdep", "update", "--rosdistro", distro], env=env)
+        # Install every system dependency declared by the packages in src/. --ignore-src skips dependencies that
+        # are themselves packages in this workspace; rosdep asks sudo for the password when it needs it.
+        run_build_step("`rosdep install`",
+                       "A dependency could not be installed (see the message above). To build anyway, run "
+                       "setup.py again with --skip-rosdep.",
+                       ["rosdep", "install", "--from-paths", "src", "--ignore-src", "--rosdistro", distro, "-y"],
+                       cwd=ROS_WORKSPACE, env=env)
+
+    # --symlink-install links launch files and scripts into install/ instead of copying them, so an edit in
+    # src/ is seen by `ros2 launch` without building again.
+    run_build_step("`colcon build`", "Read the compiler errors above, fix them, and run setup.py again "
+                   "(add --clean-ros-build if the build folders look stale).",
+                   ["colcon", "build", "--symlink-install"], cwd=ROS_WORKSPACE, env=env)
+
+    verify_ros_workspace(ros_setup, env)
+    log("ROS workspace built")
+    print("    To use it, open a NEW terminal (no need to activate .venv) and run:")
+    print(f"        source {ros_setup}")
+    print(f"        source {ROS_WORKSPACE / 'install' / 'setup.bash'}")
+    print("        ros2 launch gungnir gungnir.full.launch.py mode:=sim camera:=sim grasp_server:=<gpu ip address>")
+
 
 def is_installed(distribution: str) -> bool:
     try:
