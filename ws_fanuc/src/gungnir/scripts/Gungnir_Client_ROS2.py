@@ -53,8 +53,15 @@ responsible for reviewing and testing this revision; no claim is made that it ha
 robot or hardware.
 Claude later made a documentation-only edit: the stale "SAM2" mentions in the docstring and comments now say
 FastSAM, which is the model SegmentationModel actually loads. No code behaviour was changed by that edit.
+Claude (Anthropic; Claude Sonnet 5.5 via claude.ai), later in November 2026, added the approach move: the
+--approach-distance and --move-fixed-frame options, their pass-through to Cartesian_Path_Planner.py in
+run_move(), and one sentence in the approval panel saying the robot will first stop that far back from the
+grasp. Claude checked the edited file compiles and that the planner's command line accepts the arguments this
+file builds (with stand-in ROS modules); it has NOT run the client with ROS 2, a camera, the model server or a
+robot.
 Reviewed and tested by: Ryan Poliquin (revisions up to and including the ROS 2 camera change). The
-grasp-approval / robot-motion revision has NOT yet been reviewed or tested by the author.
+grasp-approval / robot-motion revision and the approach-move addition have NOT yet been reviewed or tested by
+the author.
 """
 
 # Store type annotations as text instead of evaluating them when the file is loaded, so annotations such as
@@ -921,6 +928,11 @@ def create_app(feed: CameraFeed, server: ServerLink, state: dict, args) -> Flask
         cmd = [sys.executable, str(args.planner_script), *numbers,
                "--frame", args.move_frame, "--eef", args.move_eef,
                "--group", args.move_group, "--speed", str(args.move_speed)]
+        # Approach move: tell the planner to stop this many metres short of the grasp (along the approach axis)
+        # before the final move. --fixed-frame is a frame that does not move with the arm, in which the planner
+        # pins both points down before the wrist camera moves. 0 leaves the planner's single straight move.
+        if args.approach_distance > 0.0:
+            cmd += ["--approach-distance", f"{args.approach_distance:.4f}", "--fixed-frame", args.move_fixed_frame]
         status, note = "failed", ""
         try:
             # Start the planner. stderr is merged into stdout because ROS 2 loggers write to stderr and we want
@@ -1137,6 +1149,8 @@ def make_callbacks(state: dict, out_root: Path, args):
             proposal = None
             if best is not None:
                 proposal = {"run_id": run_id, **best, "frame": args.move_frame, "log": [],
+                            # Shown in the approval panel: the robot first stops this far (m) back from the grasp.
+                            "approach_distance": args.approach_distance,
                             # Deadline after which the proposal can no longer be approved.
                             "expires_at": time.time() + args.approval_timeout}
                 if best["score"] >= args.min_score:
@@ -1210,6 +1224,13 @@ def main():
     parser.add_argument("--move-eef", default="tcp_frame", help="end-effector link, passed to the planner as --eef")
     parser.add_argument("--move-group", default="manipulator", help="MoveIt planning group, passed as --group")
     parser.add_argument("--move-speed", type=float, default=0.2, help="velocity/acceleration scaling, 0 < x <= 1")
+    # The robot first moves to a point this far back from the grasp, along the approach (z) axis, stops, and then
+    # moves in to the grasp. 0 = go straight to the grasp.
+    parser.add_argument("--approach-distance", type=float, default=0.05,
+                        help="metres to stop short of the grasp along the approach axis first (0 = straight in)")
+    # A frame that does not move with the arm (the camera does), used by the planner to fix both points in place.
+    parser.add_argument("--move-fixed-frame", default="base_link",
+                        help="frame fixed to the robot base, passed to the planner as --fixed-frame")
     # Grasps scoring below this are not offered to the robot (0 = always offer the best one).
     parser.add_argument("--min-score", type=float, default=0.0, help="do not propose a move if the best score is lower")
     # How long a proposal stays approvable (a grasp is only valid for the arm position at capture time).
@@ -1219,6 +1240,9 @@ def main():
     # The planner expects a speed scaling factor in (0, 1]; reject anything else before the page starts.
     if not 0.0 < args.move_speed <= 1.0:
         parser.error("--move-speed must be greater than 0 and at most 1")
+    # The planner accepts 0 to 0.5 m; reject anything else here so the mistake shows at start-up.
+    if not 0.0 <= args.approach_distance <= 0.5:
+        parser.error("--approach-distance must be between 0 and 0.5 metres")
 
     # Make sure the output folder exists (creating parents; fine if it already does).
     out_root = Path(args.output_dir)
@@ -1471,7 +1495,12 @@ INDEX_HTML = r"""<!doctype html>
       `Best grasp #${p.index} (score <b>${p.score.toFixed(3)}</b>), drawn in magenta above.<br>` +
       `Target in <code>${p.frame}</code>: ` +
       `x <code>${f(p.position[0])}</code> y <code>${f(p.position[1])}</code> z <code>${f(p.position[2])}</code> m, ` +
-      `roll <code>${f(p.rpy[0])}</code> pitch <code>${f(p.rpy[1])}</code> yaw <code>${f(p.rpy[2])}</code> rad.`;
+      `roll <code>${f(p.rpy[0])}</code> pitch <code>${f(p.rpy[1])}</code> yaw <code>${f(p.rpy[2])}</code> rad.` +
+      // One extra sentence when the approach move is on: the robot stops short of the grasp first.
+      (p.approach_distance > 0
+        ? `<br>The robot first stops <b>${(p.approach_distance * 100).toFixed(1)} cm</b> back from this point ` +
+          `along the approach axis, then moves in.`
+        : '');
     // The buttons work only while the proposal is waiting for an answer and no request is being sent.
     const awaiting = p.status === 'awaiting';
     $('move-approve').disabled = !awaiting || movePosting;
