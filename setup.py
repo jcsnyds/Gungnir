@@ -129,7 +129,6 @@ print('GPU matmul sum =', y)
 sys.exit(0 if math.isfinite(y) else 1)
 """
 
-
 # Contact-GraspNet's pointnet2 code uses tf.compat.v1.layers, which exists only on legacy Keras (tf_keras).
 TF_LEGACY_LAYERS_CHECK = """
 import tensorflow as tf
@@ -360,13 +359,32 @@ print('cv_bridge image conversion: OK')
             "constraints-linux.txt (or requirements-linux.txt) and run setup.py again."
         )
 
+
 # ======================================================================================================
+# NOT a stand-alone script. This is "Edit 4" for setup.py: paste everything below this banner into setup.py,
+# directly AFTER the end of verify_ros2_python() and BEFORE `def is_installed(`.
+#
 # AI use: written by Claude (Anthropic; Claude Sonnet 5.5 via claude.ai), November 2026, at the author's request
 # to make setup.py build the ROS 2 workspace ws_fanuc automatically. Claude checked it with py_compile under
 # Python 3.10 and 3.12 and ran it against stand-ins for apt, rosdep and colcon (command order, flags, failure
-# handling, removal of the venv from PATH). It has NOT been run with the real apt, rosdep, colcon or ROS 2.
+# handling, removal of the venv from PATH, and the execute-bit fix for symlink-installed programs, which Claude
+# added after the author's launch failed with "executable 'sim_gripper_stub.py' not found on the libexec
+# directory"), and the ROSDEP_SKIP_KEYS list, added after `rosdep install` failed with "Cannot locate rosdep
+# definition for [fanuc_crx_description]". Claude reproduced that exact error with the real rosdep 0.27.0 (simulate
+# mode, on a fake two-package workspace) and confirmed that --skip-keys removes it. The snippet has NOT been run with
+# the real apt, colcon or ROS 2 on the author's computer.
 # Reviewed and tested by: not yet reviewed or tested by the author.
 # ======================================================================================================
+
+
+# rosdep keys that are NOT installed and NOT built, on purpose. `rosdep install` stops with "Cannot locate rosdep
+# definition for [key]" (and installs nothing) when a package.xml names a dependency that is neither a package in
+# ws_fanuc/src nor a known system package. fanuc_crx_description is the FANUC robot-description package that the
+# vendored FANUC driver (ws_fanuc/src/fanuc_driver) lists in its package.xml files and robot xacros, but it is not
+# part of this repository. The gungnir package does not use it: it builds its robot from its own
+# config/gungnir.urdf.xacro and config/robots/crx30ia_urdf_macro.xacro. If rosdep reports another unknown key
+# that you do not need, add its name here.
+ROSDEP_SKIP_KEYS = ("fanuc_crx_description",)
 
 
 def ros_build_env() -> dict:
@@ -416,6 +434,41 @@ def ensure_ros_build_tools(codename: str) -> None:
     run_privileged(["apt-get", "install", "-y", *missing])
 
 
+def make_installed_programs_executable(prefix: Path) -> None:
+    """Give the execute bit to every program that `colcon build --symlink-install` linked into lib/gungnir.
+
+    Why this is needed: `install(PROGRAMS ...)` in CMakeLists.txt copies a file AND sets its execute bit in a
+    normal build, but with --symlink-install it only creates a symbolic link, so the installed program is exactly
+    as executable as the file in src/. A script committed to git without the execute bit then makes
+    `ros2 launch` fail with "executable '...' not found on the libexec directory".
+    Everything in lib/gungnir is, by definition, a program the package wants to be runnable, so fixing the
+    permission of the file each link points to is safe. Files in src/ that are NOT installed are never touched.
+
+    prefix: the package's install folder, e.g. .../ws_fanuc/install/gungnir (from `ros2 pkg prefix gungnir`).
+    """
+    libexec = prefix / "lib" / "gungnir"
+    if not libexec.is_dir():
+        return  # a package without installed programs: nothing to do
+    fixed = []
+    for entry in sorted(libexec.iterdir()):
+        # is_file() follows symbolic links: it is False for sub-folders and for links whose target is missing.
+        # os.access(..., X_OK) asks whether the current user may execute it (False for a 644 file).
+        if not entry.is_file() or os.access(entry, os.X_OK):
+            continue
+        # resolve() follows the link to the real file (in src/ for a symlink install).
+        target = entry.resolve()
+        try:
+            # Add the execute bit for owner, group and others on top of the existing permissions (644 -> 755).
+            target.chmod(target.stat().st_mode | 0o111)
+            fixed.append(target.name)
+        except OSError as exc:
+            print(f"    WARNING: could not make {target} executable ({exc}). Run: chmod +x {target}")
+    if fixed:
+        print(f"    Made {len(fixed)} installed program(s) executable: {', '.join(fixed)}")
+        print("    Their files in src/ had no execute bit, which a symlink install needs. Git now shows a mode "
+              "change: commit it so a fresh clone needs no fix.")
+
+
 def verify_ros_workspace(ros_setup: Path, env: dict) -> None:
     """After the build: check ROS can find the gungnir package, and that the launch file follows the source.
 
@@ -439,6 +492,8 @@ def verify_ros_workspace(ros_setup: Path, env: dict) -> None:
     # `ros2 pkg prefix` prints the install folder of the package, e.g. .../ws_fanuc/install/gungnir.
     prefix = Path(result.stdout.strip().splitlines()[-1])
     print(f"    ros2 pkg prefix gungnir: {prefix}")
+    # Fix scripts that were linked into lib/gungnir without the execute bit (see the function's docstring).
+    make_installed_programs_executable(prefix)
 
     # The launch file that `ros2 launch` runs is the installed one. With --symlink-install it is a link to the
     # file in src/, so edits take effect at once. A plain copy goes stale after every edit until the next build:
@@ -497,16 +552,19 @@ def build_ros_workspace(clean: bool, use_rosdep: bool) -> None:
                        ["rosdep", "update", "--rosdistro", distro], env=env)
         # Install every system dependency declared by the packages in src/. --ignore-src skips dependencies that
         # are themselves packages in this workspace; rosdep asks sudo for the password when it needs it.
+        # --skip-keys takes ONE argument: the keys separated by spaces. A skipped key that no package uses is harmless.
         run_build_step("`rosdep install`",
-                       "A dependency could not be installed (see the message above). To build anyway, run "
-                       "setup.py again with --skip-rosdep.",
-                       ["rosdep", "install", "--from-paths", "src", "--ignore-src", "--rosdistro", distro, "-y"],
+                       "A dependency could not be installed (see the message above). If it says 'Cannot locate "
+                       "rosdep definition for [name]' and you do not need that package, add the name to "
+                       "ROSDEP_SKIP_KEYS in setup.py. To build anyway, run setup.py again with --skip-rosdep.",
+                       ["rosdep", "install", "--from-paths", "src", "--ignore-src", "--rosdistro", distro,
+                        "--skip-keys", " ".join(ROSDEP_SKIP_KEYS), "-y"],
                        cwd=ROS_WORKSPACE, env=env)
 
     # --symlink-install links launch files and scripts into install/ instead of copying them, so an edit in
     # src/ is seen by `ros2 launch` without building again.
     run_build_step("`colcon build`", "Read the compiler errors above, fix them, and run setup.py again "
-                   "(add --clean-ros-build if the build folders look stale).",
+                                     "(add --clean-ros-build if the build folders look stale).",
                    ["colcon", "build", "--symlink-install"], cwd=ROS_WORKSPACE, env=env)
 
     verify_ros_workspace(ros_setup, env)
@@ -737,7 +795,6 @@ def prepare_jetson() -> None:
             pip("install", "--force-reinstall", "--no-deps", "torch", "torchvision", "--index-url", TORCH_INDEX)
 
 
-
 def build_contact_graspnet_tfops() -> None:
     """Build Contact-GraspNet TensorFlow custom ops natively for Jetson Orin."""
     if not AARCH64_LINUX:
@@ -778,9 +835,9 @@ def build_contact_graspnet_tfops() -> None:
     backup_dir.mkdir(parents=True, exist_ok=True)
 
     for name in (
-        "sampling/tf_sampling_so.so",
-        "grouping/tf_grouping_so.so",
-        "3d_interpolation/tf_interpolate_so.so",
+            "sampling/tf_sampling_so.so",
+            "grouping/tf_grouping_so.so",
+            "3d_interpolation/tf_interpolate_so.so",
     ):
         original = ops_root / name
         if original.is_file():
@@ -864,9 +921,9 @@ def build_contact_graspnet_tfops() -> None:
 
     # Confirm that all three rebuilt libraries are ARM64 ELF binaries.
     for relative in (
-        "sampling/tf_sampling_so.so",
-        "grouping/tf_grouping_so.so",
-        "3d_interpolation/tf_interpolate_so.so",
+            "sampling/tf_sampling_so.so",
+            "grouping/tf_grouping_so.so",
+            "3d_interpolation/tf_interpolate_so.so",
     ):
         binary = ops_root / relative
         result = subprocess.run(
@@ -899,7 +956,6 @@ for relative in (
     run([PY, "-c", smoke_test], env=env)
 
     log("Contact-GraspNet custom operators compiled and loaded")
-
 
 
 def check(label: str, code: str, env: dict | None = None) -> bool:
@@ -965,13 +1021,19 @@ def main() -> int:
     )
     parser.add_argument("--skip-realsense", action="store_true", help="Skip the RealSense L515 native-wrapper setup.")
     parser.add_argument("--skip-verify", action="store_true", help="Skip final smoke tests.")
-    parser.add_argument("--skip-tf-ops", action="store_true", help="Skip building Contact-GraspNet TensorFlow custom operators (Jetson only).")
-    parser.add_argument("--skip-ros-setup", action="store_true", help="Skip ROS 2 apt installation and ROS Python checks.")
+    parser.add_argument("--skip-tf-ops", action="store_true",
+                        help="Skip building Contact-GraspNet TensorFlow custom operators (Jetson only).")
+    parser.add_argument("--skip-ros-setup", action="store_true",
+                        help="Skip ROS 2 apt installation and ROS Python checks.")
     # --- ROS 2 workspace build options (used by build_ros_workspace) ---
-    parser.add_argument("--skip-ros-build", action="store_true", help="Skip building the ROS 2 workspace (ws_fanuc) with colcon.")
-    parser.add_argument("--skip-rosdep", action="store_true", help="Build the ROS 2 workspace without first installing its dependencies with rosdep.")
-    parser.add_argument("--clean-ros-build", action="store_true", help="Delete ws_fanuc/build, install and log before building (a from-scratch build).")
-    parser.add_argument("--force-ros-build", action="store_true", help="Build the ROS 2 workspace even on an ARM64/Jetson computer (skipped there by default).")
+    parser.add_argument("--skip-ros-build", action="store_true",
+                        help="Skip building the ROS 2 workspace (ws_fanuc) with colcon.")
+    parser.add_argument("--skip-rosdep", action="store_true",
+                        help="Build the ROS 2 workspace without first installing its dependencies with rosdep.")
+    parser.add_argument("--clean-ros-build", action="store_true",
+                        help="Delete ws_fanuc/build, install and log before building (a from-scratch build).")
+    parser.add_argument("--force-ros-build", action="store_true",
+                        help="Build the ROS 2 workspace even on an ARM64/Jetson computer (skipped there by default).")
     args, realsense_args = parser.parse_known_args()
 
     if IS_LINUX and not args.skip_ros_setup:
@@ -1010,7 +1072,6 @@ def main() -> int:
 
     log(f"Installing Python dependencies from {requirements.name}")
     pip("install", "-r", requirements)
-
 
     if AARCH64_LINUX:
         # tf-keras otherwise attempts to install PyPI TensorFlow over the Jetson-specific wheel.
