@@ -116,16 +116,28 @@ BEST_BGR = (255, 0, 255)
 MOVE_TIMEOUT = 300
 # How many of the planner's output lines are kept and shown in the page.
 MOVE_LOG_LINES = 40
-# Pose of the robot's TCP (tool centre point) expressed in the Contact-GraspNet grasp frame. The planner moves
-# the TCP frame (--move-eef) to  T_target = T_grasp @ TCP_IN_GRASP.
-#   * Identity (the default) means: put the TCP exactly on the grasp pose Contact-GraspNet returned.
-#   * Contact-GraspNet's grasp frame has its z axis along the approach direction (the direction the fingers
-#     travel). If your tcp_frame has a different axis convention, or its origin sits at a different distance
-#     along the gripper, edit this matrix. Example: TCP origin 10 cm further back along the approach axis:
-#         TCP_IN_GRASP = np.array([[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1, -0.10], [0, 0, 0, 1]], dtype=np.float64)
-# CHECK THIS ON YOUR ROBOT with a slow, clear-workspace test before trusting it.
-TCP_IN_GRASP = np.eye(4, dtype=np.float64)
-
+# Pose of the robot's TCP (tool centre point) expressed in the Contact-GraspNet grasp frame.
+# The planner moves the TCP frame (--move-eef) to   T_target = T_grasp @ TCP_IN_GRASP.
+#
+# Contact-GraspNet's grasp frame (see build_6d_grasp in contact_grasp_estimator.py):
+#   * origin = BASE of the Panda gripper it was trained with (not the fingertips)
+#   * +z     = approach direction (the way the fingers travel toward the object)
+#   * +x     = finger closing direction (the line between the two contact points)
+#   * the point midway between the fingertips sits gripper_depth = 0.1034 m along +z from the origin
+#
+# Gungnir's tcp_frame (gungnir_geometry.urdf.xacro):
+#   * origin = fingertip centre of the gripper
+#   * +z     = tool / approach axis, +x = jaw closing direction (checked in RViz 2026-11-22)
+#
+# Axes already agree, so no rotation: only shift the TCP 0.1034 m forward along the approach axis,
+# from the gripper base to the fingertip centre. Validated in sim: with the identity matrix the TCP
+# stopped exactly 10.3 cm short of the object.
+# AI USE: this offset and its derivation were worked out with Claude (Anthropic); verified in sim by the author.
+GRIPPER_DEPTH = 0.1034          # m, Contact-GraspNet's base-to-fingertip-centre distance (Panda hand)
+TCP_IN_GRASP = np.array([[1.0, 0.0, 0.0, 0.0],
+                         [0.0, 1.0, 0.0, 0.0],
+                         [0.0, 0.0, 1.0, GRIPPER_DEPTH],   # translate along grasp +z (approach)
+                         [0.0, 0.0, 0.0, 1.0]], dtype=np.float64)
 
 # ======================================================================================
 # Camera
