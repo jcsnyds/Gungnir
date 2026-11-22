@@ -1,9 +1,20 @@
+"""
+AI use: this launch file was written by the project's author (with earlier AI assistance that was not recorded in
+this file). Claude (Anthropic; Claude Sonnet 5.5 via claude.ai), November 2026, changed ONLY the handler that
+starts MoveIt and RViz in simulation mode (see "later" below, and the new imports EmitEvent, LogInfo and
+Shutdown): it now starts them only if the joint_trajectory_controller spawner finished successfully, and
+otherwise prints an explanation and stops the whole launch. Claude checked that the edited file compiles
+(py_compile) and that the rest of the file is unchanged (a text diff). Claude has NOT run it with ROS 2,
+Gazebo or MoveIt, because those are not installed where Claude works.
+Reviewed and tested by: not yet reviewed or tested by the author.
+"""
 import os
 
 from ament_index_python.packages import get_package_prefix, get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import (DeclareLaunchArgument, ExecuteProcess, OpaqueFunction,
+from launch.actions import (DeclareLaunchArgument, EmitEvent, ExecuteProcess, LogInfo, OpaqueFunction,
                             RegisterEventHandler, TimerAction)
+from launch.events import Shutdown  # lets the launch stop itself when a start-up step failed
 from launch.conditions import IfCondition
 from launch.event_handlers import OnProcessExit
 from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
@@ -134,7 +145,23 @@ def launch_setup(context, *args, **kwargs):
                         "/sim_camera/camera_info@sensor_msgs/msg/CameraInfo[gz.msgs.CameraInfo"]
     bridge = Node(package="ros_gz_bridge", executable="parameter_bridge", output="screen", arguments=bridge_args)
     # Start MoveIt/RViz only once the controllers exist (Gazebo takes a while to come up).
-    later = RegisterEventHandler(OnProcessExit(target_action=jtc, on_exit=[move_group, rviz]))
+    # The spawner process ends when it has loaded, configured and started the controller. Its exit code says
+    # whether that worked: 0 = yes. The old code started MoveIt on ANY exit, so after a failed spawner MoveIt
+    # ran with no controllers and every move ended in "Unable to identify any set of controllers" (error -4).
+    def start_moveit_if_controllers_ok(event, context):
+        # event.returncode is the exit code of the joint_trajectory_controller spawner process.
+        if event.returncode == 0:
+            return [move_group, rviz]
+        # Failure: say what probably happened and stop everything instead of running a robot that cannot move.
+        return [LogInfo(msg=(
+                    "[gungnir] The joint_trajectory_controller spawner FAILED (exit code "
+                    f"{event.returncode}), so the robot has no working controller. The usual cause is a "
+                    "Gazebo (ign gazebo) process left over from an earlier launch that still holds the "
+                    "controllers. Stop this launch, run: pkill -9 -f gazebo ; ros2 daemon stop ; and launch again. "
+                    "Look for lines mentioning 'Controller already loaded' above.")),
+                EmitEvent(event=Shutdown(reason="controller spawner failed"))]
+
+    later = RegisterEventHandler(OnProcessExit(target_action=jtc, on_exit=start_moveit_if_controllers_ok))
     nodes = [gazebo, gui, rsp, bridge, spawn, gripper_stub, jsb, jtc, later]
     if camera == "sim":
         nodes.append(Node(package=PKG, executable="sim_camera_adapter.py", output="screen",
