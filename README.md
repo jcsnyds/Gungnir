@@ -37,7 +37,12 @@ This will output the Server's IP address to be used in the next step.
 ### **On the Client computer**
 - Plug in the Intel Realsense L515 to a USB port then run the following command using the IP Address found from the step above.
 
-`ros2 launch gungnir gungnir.full.launcy.py <gpu-computer-ip>`
+```
+source /opt/ros/humble/setup.bash
+source ~/Gungnir/ws_fanuc/install/setup.bash
+
+ros2 launch gungnir gungnir.full.launch.py mode:=sim camera:=sim grasp_server:=<gpu ip address>
+```
 
 ## Technical Details
 

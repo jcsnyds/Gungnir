@@ -1,3 +1,4 @@
+
 """gungnir.full.launch.py: the complete Gungnir stack = gungnir.launch.py + the Gungnir client web UI.
 
     ros2 launch gungnir gungnir.full.launch.py mode:=sim camera:=sim grasp_server:=192.168.1.50
@@ -24,13 +25,14 @@ Things that must be true for the client to be useful (the launch file cannot che
   * The camera publishes on the three topic names above (they are hard-coded in the client).
   * ContactGraspnet_Server is already running on the GPU computer (grasp_server:=<its address>).
 
-AI use: This file was written by Claude (Anthropic; Claude Sonnet 5.5 via claude.ai) in November 2026, based on
+AI use: This file was originally written by Claude (Anthropic; Claude Sonnet 5.5 via claude.ai) in November 2026, based on
 the author's gungnir.launch.py and Gungnir_Client.py and the author's requirement to start the client together
 with the simulation. Claude checked only that the file compiles (py_compile); it has NOT been run with ROS 2,
 Gazebo, the real robot or the camera. The author is responsible for reviewing and testing it.
 After the author's first test run showed the client rejecting --move-frame (the client on disk was an older
 version without the grasp-approval options), Claude changed the move options to be passed only when set, and
 added a check that reports an older client clearly. That edit was again only compile-checked.
+ChatGPT (OpenAI) update, November 2026: configured the WSL source-tree path "/home/rpoli/Gungnir/ws_fanuc/src/gungnir/scripts/Gungnir_Client_ROS2.py" as the first automatic client-script discovery candidate. Existing client_script:= and GUNGNIR_CLIENT_SCRIPT overrides remain available, and the normal package/current-directory fallbacks are retained. This update has not been runtime-tested with ROS 2.
 Reviewed and tested by: not yet reviewed or tested by the author.
 """
 
@@ -50,6 +52,9 @@ from launch.substitutions import LaunchConfiguration
 PKG = "gungnir"
 # File names under which the client may be saved. The second one is the name used in the author's project.
 CLIENT_FILE_NAMES = ("Gungnir_Client_ROS2.py", "Gungnir_Client.py")
+# Preferred source-tree location on the user's WSL Ubuntu installation.
+# If this path is absent on another machine, normal discovery continues below.
+DEFAULT_CLIENT_SCRIPT = "/home/rpoli/Gungnir/ws_fanuc/src/gungnir/scripts/Gungnir_Client_ROS2.py"
 
 
 def _first_existing_file(paths):
@@ -118,7 +123,9 @@ def client_setup(context, *args, **kwargs):
     else:
         # No explicit choice: look in the usual places, in this order.
         search_dirs = (pkg_lib, pkg_share, os.path.join(pkg_share, "scripts"), os.getcwd())
-        candidates = [os.path.join(folder, name) for folder in search_dirs for name in CLIENT_FILE_NAMES]
+        # Check the user's WSL source-tree path first; skip it automatically on other machines.
+        candidates = [DEFAULT_CLIENT_SCRIPT]
+        candidates += [os.path.join(folder, name) for folder in search_dirs for name in CLIENT_FILE_NAMES]
         script = _first_existing_file(candidates)
         if script is None:
             raise RuntimeError("Gungnir client script not found. Pass client_script:=/path/to/Gungnir_Client.py "
@@ -236,8 +243,9 @@ def generate_launch_description():
         DeclareLaunchArgument("launch_client", default_value="true", choices=["true", "false"],
                               description="Start the Gungnir client web UI (false: behave like gungnir.launch.py)."),
         DeclareLaunchArgument("client_script", default_value="",
-                              description="Path of Gungnir_Client.py. Empty: $GUNGNIR_CLIENT_SCRIPT, then the "
-                                          "package's lib/ and share/ folders, then the current directory."),
+                              description="Path of Gungnir_Client_ROS2.py. Empty: $GUNGNIR_CLIENT_SCRIPT, then the "
+                                          "configured WSL source-tree path, package lib/ and share/ folders, "
+                                          "and the current directory."),
         DeclareLaunchArgument("client_python", default_value="",
                               description="Python interpreter for the client. Empty: $GUNGNIR_PYTHON, then the "
                                           ".venv/ or venv/ next to the client script, then the launch's own python3."),
