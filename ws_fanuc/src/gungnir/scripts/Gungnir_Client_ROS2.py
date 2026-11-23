@@ -59,6 +59,13 @@ run_move(), and one sentence in the approval panel saying the robot will first s
 grasp. Claude checked the edited file compiles and that the planner's command line accepts the arguments this
 file builds (with stand-in ROS modules); it has NOT run the client with ROS 2, a camera, the model server or a
 robot.
+Claude (Anthropic; Claude Opus 5.5 via claude.ai), November 2026, made the client clean up after itself when it
+is closed: a Cartesian planner process that is still running is now stopped (SIGINT, then SIGTERM, then SIGKILL)
+before the client exits, so no orphaned planner is left talking to move_group. New: ACTIVE_PLANNERS,
+ACTIVE_PLANNERS_LOCK and stop_active_planners(); run_move() registers its process there. (The main cause of
+"must kill Gazebo before the next run" was a left-over Gazebo server, which gungnir.launch.py now cleans up.)
+Claude checked the file with py_compile and ran stop_active_planners() against stand-in processes; it has NOT
+run the client with ROS 2, a camera, the model server or a robot.
 Reviewed and tested by: Ryan Poliquin (revisions up to and including the ROS 2 camera change). The
 grasp-approval / robot-motion revision and the approach-move addition have NOT yet been reviewed or tested by
 the author.
@@ -116,6 +123,44 @@ BEST_BGR = (255, 0, 255)
 MOVE_TIMEOUT = 300
 # How many of the planner's output lines are kept and shown in the page.
 MOVE_LOG_LINES = 40
+# Planner processes that are running right now (normally zero or one). run_move() adds its process here and
+# removes it when it ends, so that the client can stop a planner that is still running when the client itself is
+# closed; without this the planner would keep running on its own after the web page is gone.
+ACTIVE_PLANNERS: set = set()
+# Protects ACTIVE_PLANNERS: run_move() runs in its own thread while main() may be shutting down.
+ACTIVE_PLANNERS_LOCK = threading.Lock()
+
+
+def stop_active_planners(grace: float = 3.0) -> None:
+    """Stop every planner process that is still running. Called once when the client shuts down.
+
+    Escalates gently: SIGINT first (what Ctrl-C would send, so rclpy can shut the planner's node down), then
+    SIGTERM, then SIGKILL, waiting up to `grace` seconds after each of the first two (3 + 3 s by default, well inside
+    the 15 s that gungnir.full.launch.py allows the client to shut down). NOTE: stopping the planner
+    does not stop a trajectory that move_group is already executing; the robot finishes that motion.
+    """
+    # Take a snapshot under the lock; the processes are signalled outside it so run_move() is never blocked.
+    with ACTIVE_PLANNERS_LOCK:
+        procs = [proc for proc in ACTIVE_PLANNERS if proc.poll() is None]
+    if not procs:
+        return
+    print(f"[move] Stopping {len(procs)} running planner process(es) before the client exits", file=sys.stderr)
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        for proc in procs:
+            if proc.poll() is None:  # still running
+                try:
+                    proc.send_signal(sig)
+                except OSError:  # it exited in the meantime
+                    pass
+        # Wait for all of them together, at most `grace` seconds.
+        deadline = time.monotonic() + grace
+        while time.monotonic() < deadline and any(proc.poll() is None for proc in procs):
+            time.sleep(0.1)
+    # Anything still running ignored both requests: force it.
+    for proc in procs:
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait(timeout=5.0)
 # Pose of the robot's TCP (tool centre point) expressed in the Contact-GraspNet grasp frame.
 # The planner moves the TCP frame (--move-eef) to   T_target = T_grasp @ TCP_IN_GRASP.
 #
@@ -950,8 +995,13 @@ def create_app(feed: CameraFeed, server: ServerLink, state: dict, args) -> Flask
             # Start the planner. stderr is merged into stdout because ROS 2 loggers write to stderr and we want
             # both in one log. It inherits this process's environment, so the sourced ROS 2 setup applies to it too.
             proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
+            # Remember the running planner, so that closing the client can stop it (stop_active_planners()).
+            with ACTIVE_PLANNERS_LOCK:
+                ACTIVE_PLANNERS.add(proc)
             # Safety net: kill the planner if it has not finished within MOVE_TIMEOUT seconds.
             watchdog = threading.Timer(MOVE_TIMEOUT, proc.kill)
+            # A daemon timer never keeps the client alive on its own while it waits.
+            watchdog.daemon = True
             watchdog.start()
             try:
                 # Read the planner's output line by line while it runs, so the page shows live progress.
@@ -962,6 +1012,9 @@ def create_app(feed: CameraFeed, server: ServerLink, state: dict, args) -> Flask
                 code = proc.wait()
             finally:
                 watchdog.cancel()
+                # The planner has ended (or this thread is leaving): it no longer needs stopping at shutdown.
+                with ACTIVE_PLANNERS_LOCK:
+                    ACTIVE_PLANNERS.discard(proc)
             if code == 0:
                 status, note = "succeeded", "The robot reached the target (the planner reported success)."
             elif code < 0:
@@ -1300,6 +1353,8 @@ def main():
         # connections open); use_reloader=False stops Flask from starting a second copy that would also open the camera.
         app.run(host=args.host, port=args.port, threaded=True, use_reloader=False)
     finally:
+        # Stop a Cartesian planner that is still running, so closing the client leaves no planner process behind.
+        stop_active_planners()
         # Stop the HTTP server link if its constructor completed successfully.
         if server is not None:
             server.stop()
