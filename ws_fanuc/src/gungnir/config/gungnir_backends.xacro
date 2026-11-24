@@ -1,4 +1,14 @@
 <?xml version="1.0"?>
+<!--
+  AI use: this file was written by the project's author (any earlier AI assistance was not recorded here).
+  Claude (Anthropic; Claude Opus 5.5 via claude.ai), November 2026, added ONLY the <gpio name="Status"> block
+  inside the gungnir_mock macro, after mode:=mock failed with "Can't activate controller
+  'joint_trajectory_controller': State interface with key 'Status/collaborative_speed_scaling' does not exist".
+  Claude checked that the file is well-formed XML and that the interface names match FANUC's
+  ScaledJointTrajectoryController source (fanuc_controllers/src/scaled_joint_trajectory_controller.cpp); it has
+  NOT run the mock with ROS 2.
+  Reviewed and tested by: not yet reviewed or tested by the author.
+-->
 <robot xmlns:xacro="http://www.ros.org/wiki/xacro">
 
   <xacro:macro name="pos_joint" params="name init">
@@ -24,6 +34,21 @@
       <xacro:pos_joint name="J4" init="${ip['J4']}"/>
       <xacro:pos_joint name="J5" init="${ip['J5']}"/>
       <xacro:pos_joint name="J6" init="${ip['J6']}"/>
+      <!-- mode:=mock uses FANUC's controller config (fanuc_hardware_interface/config/ros2_controllers.yaml), whose
+           joint_trajectory_controller is fanuc_controllers/ScaledJointTrajectoryController. On top of the joint
+           interfaces it claims two robot-status values that the real FANUC hardware interface provides:
+             Status/collaborative_speed_scaling  multiplies the trajectory speed (1.0 = full programmed speed)
+             Status/motion_possible              0.0 makes the controller abort every goal and hold position
+           The GenericSystem mock has no robot, so it offers both as constant state values with the "everything
+           OK" settings below. Without them the controller cannot be activated and the arm cannot move. -->
+      <gpio name="Status">
+        <state_interface name="collaborative_speed_scaling">
+          <param name="initial_value">1.0</param>
+        </state_interface>
+        <state_interface name="motion_possible">
+          <param name="initial_value">1.0</param>
+        </state_interface>
+      </gpio>
     </ros2_control>
   </xacro:macro>
 

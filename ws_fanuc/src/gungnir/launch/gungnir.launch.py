@@ -17,6 +17,11 @@ Claude (Anthropic; Claude Opus 5.5 via claude.ai), November 2026, made two more 
      hold the joint controllers, so the spawner failed and MoveIt gave error -4), and when this launch shuts
      down it stops the Gazebo processes again so none are left behind. New launch argument clean_gazebo
      (default true) and the functions _gazebo_pids(), _stop_pids(), _clean_gazebo().
+  Follow-up after the author's first test: a Gazebo left over from an earlier sim launch was still running during
+  a mode:=mock launch. It published /joint_states with simulation timestamps next to the mock's, so RViz showed
+  the arm jumping between two poses ("Maybe failed to update robot state, time diff ..."), and its
+  controller_manager answered the spawners. The start-up cleanup therefore now runs in EVERY mode (mock, sim and
+  real), before anything is started; the shutdown cleanup stays sim-only, because only sim starts Gazebo.
 Claude checked the file with py_compile and ran the new helper functions on a copy of the repository folder tree
 and against stand-in "ign gazebo" processes (found, stopped with SIGTERM, SIGKILL fallback, own process and other
 programs left alone). The file has NOT been run with ROS 2, Gazebo or the camera.
@@ -232,6 +237,14 @@ def launch_setup(context, *args, **kwargs):
                            "Use mode:=mock camera:=real to test the physical camera without the robot.")
     show_world = sim if arg("show_world") == "auto" else arg("show_world") == "true"
 
+    # Stop any Gazebo left over from an earlier launch BEFORE anything new starts, in EVERY mode. In sim the old
+    # server still holds the joint controllers (see _clean_gazebo above). In mock and real it is just as harmful:
+    # it keeps publishing /joint_states (with simulation timestamps) and answering as /controller_manager, so RViz
+    # shows the arm jumping between two poses and the spawners may talk to the wrong controller manager. This runs
+    # now, while the launch is being set up, so it is finished before any process of this launch starts.
+    if arg("clean_gazebo") == "true":
+        _clean_gazebo("Before starting")
+
     sim_time = [{"use_sim_time": True}] if sim else []
     pkg_share = get_package_share_directory(PKG)
 
@@ -314,12 +327,7 @@ def launch_setup(context, *args, **kwargs):
         return nodes + extras + [move_group, rviz]
 
     # ---- sim ----
-    # Stop any Gazebo left over from an earlier launch BEFORE starting a new one: the old server still holds the
-    # joint controllers (see _clean_gazebo above). This runs now, while the launch is being set up, so it is
-    # finished before the new Gazebo and the controller spawners start.
-    clean_gazebo = arg("clean_gazebo") == "true"
-    if clean_gazebo:
-        _clean_gazebo("Before starting Gazebo")
+    # (Left-over Gazebo processes were already stopped at the top of launch_setup.)
     # When this launch shuts down (Ctrl-C, or the spawner-failure handler below), stop the Gazebo processes again,
     # so nothing is left behind for the next launch. The handler runs once at the start of the shutdown.
     cleanup_on_exit = RegisterEventHandler(OnShutdown(
@@ -397,8 +405,8 @@ def generate_launch_description():
                               description="Folder containing l515.py. Empty: <project>/IntelRealsense_Driver/python "
                                           "(found automatically), else an l515 that python3 can already import."),
         DeclareLaunchArgument("clean_gazebo", default_value="true", choices=["true", "false"],
-                              description="mode:=sim: stop this user's left-over Gazebo processes before starting "
-                                          "and when the launch shuts down (they hold the joint controllers)."),
+                              description="Stop this user's left-over Gazebo processes before starting (any mode) "
+                                          "and, in mode:=sim, when the launch shuts down."),
         DeclareLaunchArgument("fake_camera_dir", default_value="",
                               description="With camera:=real: replay a saved capture instead of opening the camera."),
         DeclareLaunchArgument("robot_model", default_value="crx30ia",
